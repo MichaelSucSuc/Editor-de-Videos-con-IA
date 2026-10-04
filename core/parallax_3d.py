@@ -112,14 +112,13 @@ def generate_3d_parallax_clip(
         # Curva de animación suave (smoothstep easing)
         ease = t * t * (3.0 - 2.0 * t)
         
-        # Parámetros del movimiento 3D
-        # El sujeto principal (depth=1) se acerca más que el fondo (depth=0)
-        fg_zoom = 1.0 + 0.16 * ease
-        bg_zoom = 1.0 + 0.04 * ease
+        # Parámetros del movimiento 3D sutil (evita distorsión de goma/gelatina)
+        fg_zoom = 1.0 + 0.05 * ease
+        bg_zoom = 1.0 + 0.015 * ease
         
-        # Leve desplazamiento orbital o paneo 3D
-        pan_x = 18.0 * (ease - 0.5)
-        pan_y = 8.0 * np.sin(np.pi * ease)
+        # Leve desplazamiento orbital o paneo 3D cinemático sutil
+        pan_x = 4.0 * (ease - 0.5)
+        pan_y = 2.0 * np.sin(np.pi * ease)
         
         # Mapear cada píxel según su profundidad
         # Profundidad interpolada en el canvas
