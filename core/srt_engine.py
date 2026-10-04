@@ -189,8 +189,15 @@ def align_images_with_srt(
     if total_audio_duration and total_audio_duration > total_end:
         total_end = total_audio_duration
 
+    # Comprobar si los bloques tienen marcas de tiempo válidas (no todas en 0.0 o sin avance temporal)
+    has_valid_timestamps = False
+    if srt_blocks and len(srt_blocks) > 1:
+        has_valid_timestamps = any(b.get("start_time", 0.0) > 0.5 for b in srt_blocks[1:])
+    elif srt_blocks and len(srt_blocks) == 1:
+        has_valid_timestamps = srt_blocks[0].get("end_time", 0.0) > 0.5
+
     # Estrategia 1: Comprobar si hay etiquetas explícitas [1], [2] en los bloques
-    has_explicit_tags = any(b["explicit_img_number"] is not None for b in srt_blocks)
+    has_explicit_tags = any(b.get("explicit_img_number") is not None for b in srt_blocks)
     
     schedule = []
     
@@ -201,7 +208,7 @@ def align_images_with_srt(
         cuts = []
         current_img = images_metadata[0]
         for b in srt_blocks:
-            if b["explicit_img_number"] is not None and b["explicit_img_number"] in img_by_num:
+            if b.get("explicit_img_number") is not None and b["explicit_img_number"] in img_by_num:
                 current_img = img_by_num[b["explicit_img_number"]]
             cuts.append((b, current_img))
             
@@ -225,15 +232,31 @@ def align_images_with_srt(
         if current_entry:
             schedule.append(current_entry)
 
+    elif not has_valid_timestamps:
+        # Guion pegado como texto plano sin marcas [MM:SS]: distribuir equitativamente el tiempo total
+        img_duration = total_end / float(num_images)
+        for i, img in enumerate(images_metadata):
+            start = i * img_duration
+            end = total_end if i == num_images - 1 else (i + 1) * img_duration
+            matching_texts = [srt_blocks[i]["display_text"]] if i < num_blocks else []
+            schedule.append({
+                "image": img,
+                "start_time": start,
+                "end_time": end,
+                "duration": max(0.1, end - start),
+                "associated_texts": matching_texts
+            })
+
     elif num_images == num_blocks:
         # Caso 1 a 1 directo: cada imagen con su bloque respectivo
-        prev_end = 0.0
         for i, (img, block) in enumerate(zip(images_metadata, srt_blocks)):
-            # La primera imagen arranca en 0.0s para no dejar pantalla negra antes de hablar
             start = 0.0 if i == 0 else block["start_time"]
-            # Cada imagen cubre hasta el inicio de la siguiente para que no haya huecos negros en silencios
             next_start = srt_blocks[i + 1]["start_time"] if i + 1 < num_blocks else total_end
-            end = next_start
+            if next_start <= start:
+                next_start = start + max(1.0, (total_end - start) / float(num_blocks - i))
+            end = min(total_end, next_start)
+            if i == num_blocks - 1:
+                end = total_end
             schedule.append({
                 "image": img,
                 "start_time": start,
@@ -257,7 +280,10 @@ def align_images_with_srt(
             start = 0.0 if i == 0 else first_block["start_time"]
             if i + 1 < num_images:
                 next_first_block = srt_blocks[min(int(round((i + 1) * blocks_per_img)), num_blocks - 1)]
-                end = next_first_block["start_time"]
+                next_start = next_first_block["start_time"]
+                if next_start <= start:
+                    next_start = start + max(1.0, (total_end - start) / float(num_images - i))
+                end = min(total_end, next_start)
             else:
                 end = total_end
 

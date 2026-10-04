@@ -873,8 +873,27 @@ class VideoEditorApp(ctk.CTk):
             pos_val = self.combo_pos.get().split(" - ")[0].strip()
             hl_color = self.combo_highlight.get().split(" - ")[0].strip()
 
+            # Si el guion no tiene marcas [MM:SS] explícitas (ej. líneas de texto plano),
+            # alinear acústicamente las frases con la voz para que las imágenes cambien al hablar cada frase
+            has_explicit_timestamps = any(b.get("start_time", 0.0) > 0.5 for b in srt_blocks[1:]) if len(srt_blocks) > 1 else False
+            if srt_blocks and not has_explicit_timestamps and actual_audio_path and os.path.exists(actual_audio_path):
+                report_progress(2.5, "🎙️ Analizando voz para sincronizar imágenes con cada frase...")
+                self._append_log("Guion sin marcas [MM:SS]: analizando audio acústicamente para hacer coincidir cada imagen con su frase hablada...")
+                try:
+                    aligned_base = align_transcript_with_acoustic_analysis(
+                        srt_blocks=srt_blocks,
+                        audio_path=actual_audio_path,
+                        max_words_per_chunk=0,
+                        total_audio_duration=self.audio_duration
+                    )
+                    if aligned_base and any(b.get("start_time", 0.0) > 0.5 for b in aligned_base[1:]):
+                        srt_blocks = aligned_base
+                        self._append_log(f"✔ Marcas de voz sincronizadas con éxito para {len(srt_blocks)} imágenes.")
+                except Exception as e_ac:
+                    self._append_log(f"⚠ Aviso en sincronización acústica previa: {e_ac}")
+
             # 2. Alinear imágenes según las marcas exactas del usuario [MM:SS]
-            report_progress(3.0, "Sincronizando cambios de imágenes según marcas [MM:SS]...")
+            report_progress(3.0, "Sincronizando cambios de imágenes...")
             clean_media = [
                 img for img in self.images_list 
                 if os.path.abspath(img.get("absolute_path", "")) != os.path.abspath(output_path)
@@ -995,6 +1014,7 @@ class VideoEditorApp(ctk.CTk):
 
     def _render_finished_success(self):
         self.is_rendering = False
+        self.btn_preview.configure(state="normal")
         self.btn_render.configure(state="normal")
         self.btn_open_result.configure(state="normal")
         self.lbl_render_status.configure(text="🎉 ¡Video exportado con éxito!", text_color="#4ade80")
@@ -1003,6 +1023,7 @@ class VideoEditorApp(ctk.CTk):
 
     def _render_finished_error(self, err_msg: str, trace_msg: str = ""):
         self.is_rendering = False
+        self.btn_preview.configure(state="normal")
         self.btn_render.configure(state="normal")
         self.lbl_render_status.configure(text=f"❌ Error durante el renderizado.", text_color="#f87171")
         
