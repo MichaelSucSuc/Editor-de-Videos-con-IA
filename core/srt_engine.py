@@ -87,9 +87,16 @@ def parse_srt(srt_content: str, total_duration: Optional[float] = None) -> List[
 
             duration = max(0.1, end_sec - start_sec)
             
-            explicit_img_match = re.search(r'\[(?:img:?\s*)?(\d+)\]', clean_text, re.IGNORECASE)
-            explicit_img_num = int(explicit_img_match.group(1)) if explicit_img_match else None
-            display_text = re.sub(r'\[(?:img:?\s*)?\d+\]', '', clean_text).strip()
+            strict_match = re.search(r'\[(?:img:?|foto:?|imagen:?\s*)(\d+)\]', clean_text, re.IGNORECASE)
+            is_strict = True if strict_match else False
+            if strict_match:
+                explicit_img_num = int(strict_match.group(1))
+            else:
+                num_bracket = re.search(r'\[(\d+)\]', clean_text)
+                explicit_img_num = int(num_bracket.group(1)) if num_bracket else None
+
+            # Limpiar etiquetas o citas tipo [1], [img: 1] del subtítulo visible
+            display_text = re.sub(r'\[(?:img:?|foto:?|imagen:?\s*)?\d+\]', '', clean_text).strip()
 
             blocks.append({
                 "index": idx + 1,
@@ -98,7 +105,8 @@ def parse_srt(srt_content: str, total_duration: Optional[float] = None) -> List[
                 "duration": duration,
                 "raw_text": clean_text,
                 "display_text": display_text,
-                "explicit_img_number": explicit_img_num
+                "explicit_img_number": explicit_img_num,
+                "is_strict_tag": is_strict
             })
         return blocks
 
@@ -118,9 +126,15 @@ def parse_srt(srt_content: str, total_duration: Optional[float] = None) -> List[
         duration = max(0.1, end_sec - start_sec)
         clean_text = text_raw.strip()
 
-        explicit_img_match = re.search(r'\[(?:img:?\s*)?(\d+)\]', clean_text, re.IGNORECASE)
-        explicit_img_num = int(explicit_img_match.group(1)) if explicit_img_match else None
-        display_text = re.sub(r'\[(?:img:?\s*)?\d+\]', '', clean_text).strip()
+        strict_match = re.search(r'\[(?:img:?|foto:?|imagen:?\s*)(\d+)\]', clean_text, re.IGNORECASE)
+        is_strict = True if strict_match else False
+        if strict_match:
+            explicit_img_num = int(strict_match.group(1))
+        else:
+            num_bracket = re.search(r'\[(\d+)\]', clean_text)
+            explicit_img_num = int(num_bracket.group(1)) if num_bracket else None
+
+        display_text = re.sub(r'\[(?:img:?|foto:?|imagen:?\s*)?\d+\]', '', clean_text).strip()
 
         blocks.append({
             "index": int(idx_str) if idx_str and idx_str.isdigit() else idx,
@@ -129,15 +143,23 @@ def parse_srt(srt_content: str, total_duration: Optional[float] = None) -> List[
             "duration": duration,
             "raw_text": clean_text,
             "display_text": display_text,
-            "explicit_img_number": explicit_img_num
+            "explicit_img_number": explicit_img_num,
+            "is_strict_tag": is_strict
         })
 
     # Si no tiene marcas de tiempo pero contiene texto (ej. guion pegado directamente)
     if not blocks and content:
         lines = [line.strip() for line in content.split('\n') if line.strip()]
         for idx, line in enumerate(lines, start=1):
-            explicit_img_match = re.search(r'\[(?:img:?\s*)?(\d+)\]', line, re.IGNORECASE)
-            explicit_img_num = int(explicit_img_match.group(1)) if explicit_img_match else None
+            strict_match = re.search(r'\[(?:img:?|foto:?|imagen:?\s*)(\d+)\]', line, re.IGNORECASE)
+            is_strict = True if strict_match else False
+            if strict_match:
+                explicit_img_num = int(strict_match.group(1))
+            else:
+                num_bracket = re.search(r'\[(\d+)\]', line)
+                explicit_img_num = int(num_bracket.group(1)) if num_bracket else None
+
+            display_text = re.sub(r'\[(?:img:?|foto:?|imagen:?\s*)?\d+\]', '', line).strip()
             display_text = re.sub(r'\[(?:img:?\s*)?\d+\]', '', line).strip()
             blocks.append({
                 "index": idx,
@@ -196,8 +218,14 @@ def align_images_with_srt(
     elif srt_blocks and len(srt_blocks) == 1:
         has_valid_timestamps = srt_blocks[0].get("end_time", 0.0) > 0.5
 
-    # Estrategia 1: Comprobar si hay etiquetas explícitas [1], [2] en los bloques
-    has_explicit_tags = any(b.get("explicit_img_number") is not None for b in srt_blocks)
+    # Estrategia 1: Comprobar si hay etiquetas explícitas [img: 1] o números [1], [2]...
+    # REGLA CRÍTICA: Si todos los bloques tienen la MISMA etiqueta (por ejemplo todos terminan en '[1]'
+    # porque el texto fue copiado de ChatGPT/Perplexity/NotebookLM/Word con citas al pie de página),
+    # NO es una directiva de fijar imagen sino una cita textual. Solo se activa si las etiquetas varían
+    # entre bloques o si se usó una etiqueta estricta [img: X] / [foto: X].
+    has_strict_tags = any(b.get("is_strict_tag") for b in srt_blocks)
+    explicit_numbers = [b.get("explicit_img_number") for b in srt_blocks if b.get("explicit_img_number") is not None]
+    has_explicit_tags = has_strict_tags or (len(set(explicit_numbers)) > 1)
     
     schedule = []
     
