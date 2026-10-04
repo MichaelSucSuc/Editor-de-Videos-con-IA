@@ -9,10 +9,12 @@ import customtkinter as ctk
 
 from core.sorter import scan_and_sort_images
 from core.srt_engine import parse_srt, align_images_with_srt
+from core.voice_aligner import align_transcript_with_acoustic_analysis, transcribe_audio_to_srt
 from core.motion_engine import assign_motions_to_schedule
 from core.subtitles import SUBTITLE_STYLES, generate_ass_file
 from core.transitions import TRANSITION_TYPES
 from core.renderer import render_video_pipeline, get_audio_duration
+
 
 # Configuración visual global
 ctk.set_appearance_mode("dark")
@@ -107,6 +109,27 @@ class VideoEditorApp(ctk.CTk):
         btn_srt.pack(side="left")
         self.lbl_srt_status = ctk.CTkLabel(f_srt, text="Opcional: Carga archivo .srt o pega el texto abajo", text_color="#94a3b8", anchor="w")
         self.lbl_srt_status.pack(side="left", padx=15, fill="x", expand=True)
+
+        # Fila Analizar Audio con Vosk IA (Detección acústica exacta)
+        f_vosk = ctk.CTkFrame(sec1, fg_color="transparent")
+        f_vosk.pack(fill="x", padx=15, pady=(2, 6))
+        self.btn_vosk_transcribe = ctk.CTkButton(
+            f_vosk, 
+            text="🎙️ Analizar Audio y Sincronizar Subtítulos (Vosk IA)", 
+            width=280, 
+            fg_color="#8b5cf6", 
+            hover_color="#7c3aed", 
+            font=ctk.CTkFont(weight="bold"),
+            command=self._start_audio_transcription
+        )
+        self.btn_vosk_transcribe.pack(side="left")
+        self.lbl_vosk_status = ctk.CTkLabel(
+            f_vosk, 
+            text="Sincroniza cada palabra exactamente con los picos acústicos de la voz", 
+            text_color="#a78bfa", 
+            anchor="w"
+        )
+        self.lbl_vosk_status.pack(side="left", padx=15, fill="x", expand=True)
 
         # Fila de Título y Botones de Copiar/Pegar/Limpiar
         f_srt_tools = ctk.CTkFrame(sec1, fg_color="transparent")
@@ -446,6 +469,62 @@ class VideoEditorApp(ctk.CTk):
         self.txt_srt.delete("1.0", "end")
         self._append_log("🧹 Texto de subtítulos limpiado.")
 
+    def _start_audio_transcription(self):
+        audio_path = self.audio_file_path.get()
+        if not audio_path or not os.path.exists(audio_path):
+            messagebox.showwarning("Atención", "Por favor selecciona primero un archivo de audio (.mp3 o .wav).")
+            return
+
+        if self.is_rendering:
+            messagebox.showinfo("Ocupado", "Hay una tarea de exportación en progreso.")
+            return
+
+        self.btn_vosk_transcribe.configure(state="disabled", text="⏳ Analizando voz...")
+        self.lbl_vosk_status.configure(text="Extrayendo ondas sonoras y detectando palabras...", text_color="#f59e0b")
+        self._append_log("=" * 60)
+        self._append_log(f"🎙️ Iniciando análisis acústico y sincronización de voz con Vosk...")
+        self._append_log(f"Audio: {os.path.basename(audio_path)}")
+
+        def worker():
+            try:
+                chunk_val = int(self.combo_chunk.get().split(" - ")[0].strip())
+                existing_text = self.txt_srt.get("1.0", "end").strip()
+                srt_result = transcribe_audio_to_srt(
+                    audio_path=audio_path,
+                    max_words_per_chunk=chunk_val,
+                    existing_script=existing_text,
+                    total_duration=self.audio_duration
+                )
+
+                def on_done():
+                    self.btn_vosk_transcribe.configure(state="normal", text="🎙️ Analizar Audio y Sincronizar Subtítulos (Vosk IA)")
+                    if srt_result:
+                        self.txt_srt.delete("1.0", "end")
+                        self.txt_srt.insert("1.0", srt_result)
+                        blocks_count = len([b for b in srt_result.split("\n\n") if b.strip()])
+                        self.lbl_vosk_status.configure(
+                            text=f"✔ ¡Voz analizada con éxito! {blocks_count} ráfagas sincronizadas a la voz.",
+                            text_color="#4ade80"
+                        )
+                        self._append_log(f"✓ Detección acústica exitosa: {blocks_count} bloques SRT generados y sincronizados al milisegundo.")
+                    else:
+                        self.lbl_vosk_status.configure(
+                            text="Aviso: No se detectó voz clara en el audio.",
+                            text_color="#ef4444"
+                        )
+                        self._append_log("Aviso: Vosk no detectó voz en el audio (posible pista instrumental o silencio).")
+
+                self.after(0, on_done)
+            except Exception as e:
+                def on_error(err=e):
+                    self.btn_vosk_transcribe.configure(state="normal", text="🎙️ Analizar Audio y Sincronizar Subtítulos (Vosk IA)")
+                    self.lbl_vosk_status.configure(text=f"Error en análisis: {err}", text_color="#ef4444")
+                    self._append_log(f"Error en análisis acústico: {err}")
+                self.after(0, on_error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
     # Consola de Registro y Diagnóstico
     def _copy_logs_clipboard(self):
         logs = self.txt_logs.get("1.0", "end").strip()
@@ -518,10 +597,32 @@ class VideoEditorApp(ctk.CTk):
             # 1. Leer y parsear SRT (de la caja de texto o archivo)
             srt_content = self.txt_srt.get("1.0", "end").strip()
             srt_blocks = parse_srt(srt_content) if srt_content else []
-            self._append_log(f"Bloques de subtítulos/frases parseados: {len(srt_blocks)}")
+            self._append_log(f"Bloques de texto/subtítulos base parseados: {len(srt_blocks)}")
+
+            chunk_val = int(self.combo_chunk.get().split(" - ")[0].strip())
+            pos_val = self.combo_pos.get().split(" - ")[0].strip()
+            audio_path = self.audio_file_path.get()
+
+            # Análisis acústico fonético con Vosk para sincronización de voz exacta
+            if self.var_sub_enable.get() and audio_path and os.path.exists(audio_path):
+                report_progress(3.0, "🎙️ Analizando acústicamente la pista de voz con Vosk...")
+                self._append_log("Iniciando análisis acústico de voz con modelo local Vosk...")
+                try:
+                    aligned_blocks = align_transcript_with_acoustic_analysis(
+                        srt_blocks=srt_blocks,
+                        audio_path=audio_path,
+                        max_words_per_chunk=chunk_val
+                    )
+                    if aligned_blocks:
+                        srt_blocks = aligned_blocks
+                        self._append_log(f"✓ Detección acústica exitosa: {len(srt_blocks)} ráfagas de subtítulos sincronizadas a la voz al milisegundo.")
+                    else:
+                        self._append_log("Aviso: No se detectaron palabras en Vosk; usando distribución de respaldo.")
+                except Exception as ex_v:
+                    self._append_log(f"Aviso en análisis acústico: {ex_v}")
 
             # 2. Alinear imágenes con SRT y duración de audio
-            report_progress(2.0, "Sincronizando tiempos de imágenes con el audio...")
+            report_progress(5.0, "Sincronizando tiempos de imágenes con el audio...")
             schedule = align_images_with_srt(
                 images_metadata=self.images_list,
                 srt_blocks=srt_blocks,
@@ -546,9 +647,6 @@ class VideoEditorApp(ctk.CTk):
                 w = 1080 if aspect_choice == "9:16" else 1920
                 h = 1920 if aspect_choice == "9:16" else 1080
 
-                chunk_val = int(self.combo_chunk.get().split(" - ")[0].strip())
-                pos_val = self.combo_pos.get().split(" - ")[0].strip()
-
                 generate_ass_file(
                     srt_blocks=srt_blocks,
                     output_ass_path=ass_path,
@@ -557,9 +655,9 @@ class VideoEditorApp(ctk.CTk):
                     video_height=h,
                     max_words_per_subtitle=chunk_val,
                     position_mode=pos_val,
-                    audio_path=self.audio_file_path.get()
+                    audio_path=None  # Ya alineado acústicamente en el paso 1
                 )
-                self._append_log(f"Subtítulos sincronizados acústicamente con la voz: {style_key} | {chunk_val} pal/pantalla | {pos_val}")
+                self._append_log(f"Subtítulos estilizados generados: {style_key} | {chunk_val} pal/pantalla | {pos_val}")
 
             # 6. Renderizar video
             render_video_pipeline(

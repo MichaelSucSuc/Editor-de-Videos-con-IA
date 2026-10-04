@@ -175,7 +175,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     # Si se pasa audio, analizar acústicamente la voz para sincronizar cada palabra con precisión de milisegundos
     if audio_path and os.path.exists(audio_path):
-        expanded_blocks = align_transcript_blocks_to_audio(srt_blocks, audio_path)
+        expanded_blocks = align_transcript_blocks_to_audio(srt_blocks, audio_path, max_words_per_chunk=max_words_per_subtitle)
     else:
         expanded_blocks = []
         for block in srt_blocks:

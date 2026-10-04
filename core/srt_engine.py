@@ -33,6 +33,23 @@ def format_ass_timestamp(seconds: float) -> str:
         centis = 99
     return f"{hrs}:{mins:02d}:{int(secs):02d}.{centis:02d}"
 
+def format_srt_timestamp(seconds: float) -> str:
+    """
+    Convierte segundos a formato de tiempo para subtítulos SRT: HH:MM:SS,mmm
+    """
+    if seconds < 0:
+        seconds = 0.0
+    hrs = int(seconds // 3600)
+    rem = seconds % 3600
+    mins = int(rem // 60)
+    secs = rem % 60
+    millis = int(round((secs - int(secs)) * 1000))
+    if millis >= 1000:
+        secs += 1
+        millis = 0
+    return f"{hrs:02d}:{mins:02d}:{int(secs):02d},{millis:03d}"
+
+
 def parse_srt(srt_content: str) -> List[Dict[str, Any]]:
     """
     Parsea subtítulos soportando dos formatos:
@@ -111,7 +128,26 @@ def parse_srt(srt_content: str) -> List[Dict[str, Any]]:
             "explicit_img_number": explicit_img_num
         })
 
+    # Si no tiene marcas de tiempo pero contiene texto (ej. guion pegado directamente)
+    if not blocks and content:
+        lines = [line.strip() for line in content.split('\n') if line.strip()]
+        for idx, line in enumerate(lines, start=1):
+            explicit_img_match = re.search(r'\[(?:img:?\s*)?(\d+)\]', line, re.IGNORECASE)
+            explicit_img_num = int(explicit_img_match.group(1)) if explicit_img_match else None
+            display_text = re.sub(r'\[(?:img:?\s*)?\d+\]', '', line).strip()
+            blocks.append({
+                "index": idx,
+                "start_time": 0.0,
+                "end_time": 0.0,
+                "duration": 0.0,
+                "raw_text": line,
+                "display_text": display_text,
+                "explicit_img_number": explicit_img_num,
+                "is_raw_script": True
+            })
+
     return blocks
+
 
 def align_images_with_srt(
     images_metadata: List[Dict[str, Any]], 
