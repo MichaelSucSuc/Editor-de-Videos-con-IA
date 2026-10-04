@@ -31,9 +31,13 @@ def scan_and_sort_media(folder_path: str, media_type_filter: str = "all") -> Lis
     else:  # "all"
         valid_exts = VALID_IMAGE_EXTENSIONS.union(VALID_VIDEO_EXTENSIONS)
 
+    ignored_names = {"video_final_ia.mp4", "output.mp4", "video_final.mp4"}
     media_files = []
     for entry in os.scandir(folder_path):
         if entry.is_file():
+            lower_name = entry.name.lower()
+            if lower_name in ignored_names or lower_name.startswith("temp_") or lower_name.startswith("video_final"):
+                continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext in valid_exts:
                 media_files.append(entry.path)

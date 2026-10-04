@@ -562,9 +562,18 @@ class VideoEditorApp(ctk.CTk):
 
             # 2. Alinear imágenes según las marcas exactas del usuario [MM:SS]
             report_progress(3.0, "Sincronizando cambios de imágenes según marcas [MM:SS]...")
-            self._append_log(f"Asignando {len(self.images_list)} imágenes según las marcas de tiempo del guion...")
+            # Filtrar para asegurar que el archivo de salida no esté dentro de las imágenes/videos de entrada
+            clean_media = [
+                img for img in self.images_list 
+                if os.path.abspath(img.get("absolute_path", "")) != os.path.abspath(output_path)
+                and not os.path.basename(img.get("filename", "")).lower().startswith("video_final")
+            ]
+            if not clean_media:
+                clean_media = self.images_list
+
+            self._append_log(f"Asignando {len(clean_media)} medios según las marcas de tiempo del guion...")
             schedule = align_images_with_srt(
-                images_metadata=self.images_list,
+                images_metadata=clean_media,
                 srt_blocks=srt_blocks,
                 total_audio_duration=self.audio_duration
             )

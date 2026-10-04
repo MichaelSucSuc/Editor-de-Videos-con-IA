@@ -26,14 +26,20 @@ def master_voiceover_audio(
     ffmpeg_exe = get_ffmpeg_path()
     os.makedirs(os.path.dirname(os.path.abspath(output_audio_path)), exist_ok=True)
 
-    # Cadena de filtros de audio profesional para voz
+    # Cadena de filtros de audio profesional para voz en redes sociales (TikTok / Reels / Shorts)
+    # 1. Highpass 80Hz para eliminar ruidos de fondo y graves
+    # 2. Ecualización paramétrica: limpia frecuencias nasales (320Hz) y potencia presencia/articulación (3.4kHz y 10kHz)
+    # 3. Dynamic Audio Normalizer (dynaudnorm): eleva palabras bajas y homogeneiza la voz para claridad total
+    # 4. Limitador transparente para picos bruscos
+    # 5. Normalización EBU R128 a volumen comercial óptimo (-12.5 a -13.0 LUFS)
     filter_chain = (
         "highpass=f=80,"
         "equalizer=f=320:width_type=h:width=180:g=-2.5,"
-        "equalizer=f=3400:width_type=h:width=1200:g=3.2,"
-        "highshelf=f=10000:g=2.0,"
-        "acompressor=threshold=-18dB:ratio=3.2:attack=8:release=60:makeup=2,"
-        f"loudnorm=I={target_lufs}:TP=-1.5:LRA=7"
+        "equalizer=f=3400:width_type=h:width=1200:g=3.8,"
+        "highshelf=f=10000:g=2.8,"
+        "dynaudnorm=f=120:g=15:p=0.95:m=6.0,"
+        "alimiter=limit=0.92:attack=5:release=50,"
+        f"loudnorm=I={target_lufs}:TP=-0.8:LRA=6:dual_mono=true"
     )
 
     cmd = [
