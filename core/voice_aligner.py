@@ -15,12 +15,28 @@ _GLOBAL_VOSK_MODEL = None
 def get_vosk_model():
     """
     Carga el modelo acústico en español de Vosk en memoria (singleton).
-    Descargado y almacenado localmente en caché.
+    Prioriza la carpeta local 'models/' dentro del proyecto para que la aplicación
+    sea 100% portable y autónoma en cualquier computadora sin internet.
     """
     global _GLOBAL_VOSK_MODEL
     if _GLOBAL_VOSK_MODEL is None:
         import vosk
         vosk.SetLogLevel(-1)
+
+        # Buscar en carpetas locales del proyecto (modo portable / pendrive)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidate_paths = [
+            os.path.join(base_dir, "models", "vosk-model-small-es-0.42"),
+            os.path.join(base_dir, "models", "vosk-es"),
+            os.path.join(base_dir, "models")
+        ]
+
+        for cand in candidate_paths:
+            if os.path.exists(cand) and (os.path.exists(os.path.join(cand, "am")) or os.path.exists(os.path.join(cand, "conf"))):
+                _GLOBAL_VOSK_MODEL = vosk.Model(cand)
+                return _GLOBAL_VOSK_MODEL
+
+        # Fallback a caché del sistema o descarga automática si no está en models/
         _GLOBAL_VOSK_MODEL = vosk.Model(lang="es")
     return _GLOBAL_VOSK_MODEL
 
