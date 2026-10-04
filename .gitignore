@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Carpetas de pruebas y renderizado temporal
+test_workspace/
+*.mp4
+*.wav
+*.ass
+
+# Entorno de desarrollo
+.vscode/
+.idea/
