@@ -119,6 +119,8 @@ def chunk_srt_block(block: Dict[str, Any], max_words: int = 3) -> List[Dict[str,
 
     return sub_blocks
 
+from core.voice_aligner import align_transcript_blocks_to_audio
+
 def generate_ass_file(
     srt_blocks: List[Dict[str, Any]], 
     output_ass_path: str,
@@ -126,29 +128,28 @@ def generate_ass_file(
     video_width: int = 1080,
     video_height: int = 1920,
     max_words_per_subtitle: int = 3,
-    position_mode: str = "safe_tiktok"
+    position_mode: str = "safe_tiktok",
+    audio_path: str = None
 ) -> str:
     """
     Convierte una lista de bloques SRT en un archivo de subtítulos .ass avanzado:
-    1. Subdivide frases largas en ráfagas de 2-3 palabras para dinamismo viral continuo.
-    2. Coloca los subtítulos en una posición elevada óptima (lejos de la barra inferior de TikTok).
-    3. Aplica tipografía de gran tamaño con animación de impacto (bounce/pop).
+    1. Si se proporciona audio, analiza internamente la voz (energía y pausas) para marcas de tiempo acústicamente exactas.
+    2. Subdivide frases largas en ráfagas de 2-3 palabras para dinamismo viral continuo.
+    3. Coloca los subtítulos en una posición elevada óptima (lejos de la barra inferior de TikTok).
+    4. Aplica tipografía de gran tamaño con animación de impacto (bounce/pop).
     """
     style = SUBTITLE_STYLES.get(style_key, SUBTITLE_STYLES["hormozi"])
     border_style = style.get("border_style", 1)
 
     # Calcular posición vertical (MarginV)
     if position_mode == "center":
-        # Centrado en pantalla
         alignment = 5
         margin_v = 0
     elif position_mode == "bottom_low":
-        # Muy abajo (clásico)
         alignment = 2
         margin_v = int(video_height * 0.10)
     else:  # "safe_tiktok" (Recomendado)
         alignment = 2
-        # Elevar los subtítulos para que queden visiblemente despegados del borde inferior
         ratio = style.get("margin_v_ratio", 0.28)
         margin_v = int(video_height * ratio)
 
@@ -172,11 +173,14 @@ Style: Default,{style['fontname']},{fontsize},{style['primary_color']},&H000000F
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    # Desglosar los bloques de entrada en sub-bloques cortos de 2 a 3 palabras
-    expanded_blocks = []
-    for block in srt_blocks:
-        sub_list = chunk_srt_block(block, max_words=max_words_per_subtitle)
-        expanded_blocks.extend(sub_list)
+    # Si se pasa audio, analizar acústicamente la voz para sincronizar cada palabra con precisión de milisegundos
+    if audio_path and os.path.exists(audio_path):
+        expanded_blocks = align_transcript_blocks_to_audio(srt_blocks, audio_path)
+    else:
+        expanded_blocks = []
+        for block in srt_blocks:
+            sub_list = chunk_srt_block(block, max_words=max_words_per_subtitle)
+            expanded_blocks.extend(sub_list)
 
     events = []
     anim = style.get("animation_tag", "")

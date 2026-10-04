@@ -518,9 +518,10 @@ class VideoEditorApp(ctk.CTk):
                     video_width=w,
                     video_height=h,
                     max_words_per_subtitle=chunk_val,
-                    position_mode=pos_val
+                    position_mode=pos_val,
+                    audio_path=self.audio_file_path.get()
                 )
-                self._append_log(f"Subtítulos: {style_key} | {chunk_val} palabras/pantalla | Posición: {pos_val}")
+                self._append_log(f"Subtítulos sincronizados acústicamente con la voz: {style_key} | {chunk_val} pal/pantalla | {pos_val}")
 
             # 6. Renderizar video
             render_video_pipeline(
