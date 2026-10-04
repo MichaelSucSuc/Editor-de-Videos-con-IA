@@ -112,28 +112,70 @@ def mix_voiceover_with_bgm(
     return output_path
 
 
+TRANSITION_SFX_MAP = {
+    "fade": "swoosh_soft.wav",
+    "wipeleft": "whip_fast.wav",
+    "wiperight": "whip_fast.wav",
+    "slideleft": "slide_swish.wav",
+    "slideright": "slide_swish.wav",
+    "zoomin": "zoom_impact.wav",
+    "circlecrop": "pop_snap.wav",
+    "radial": "pop_snap.wav"
+}
+
+VARIETY_SFX_LIST = [
+    "whoosh.wav",
+    "slide_swish.wav",
+    "whip_fast.wav",
+    "swoosh_soft.wav",
+    "zoom_impact.wav",
+    "pop_snap.wav"
+]
+
 def add_transition_sfx_to_audio(
     audio_path: str,
     output_path: str,
     transition_timestamps: list,
+    transition_type: str = "fade",
+    sfx_mode: str = "auto",
     sfx_path: str = None,
     sfx_volume: float = 0.35
 ) -> str:
     """
-    Inyecta efectos de sonido 'Whoosh' en los momentos exactos de cada transición visual entre imágenes/videos.
+    Inyecta efectos de sonido cinemáticos en los momentos exactos de cada corte/transición:
+    - sfx_mode == 'auto': selecciona el efecto sonoro exacto que corresponde visualmente a la transición:
+        * fade (disolución) -> swoosh suave y ambiental (swoosh_soft.wav)
+        * wipe (barridos) -> látigo rápido y enérgico (whip_fast.wav)
+        * slide (desplazamientos) -> swish dinámico de fricción de aire (slide_swish.wav)
+        * zoomin -> sub-bass riser de impacto (zoom_impact.wav)
+        * circlecrop / radial -> snap / pop moderno (pop_snap.wav)
+    - sfx_mode == 'variety': alterna automáticamente entre sonidos distintos en cada corte de imagen.
+    - sfx_mode específico: utiliza un efecto sonoro fijo seleccionado por el usuario.
     """
     if not os.path.exists(audio_path) or not transition_timestamps:
         return audio_path
 
-    if sfx_path is None or not os.path.exists(sfx_path):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sfx_path = os.path.join(base_dir, "assets", "sfx", "whoosh.wav")
-
-    if not os.path.exists(sfx_path):
-        return audio_path
-
     import wave
     import numpy as np
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sfx_dir = os.path.join(base_dir, "assets", "sfx")
+
+    # Precargar todos los efectos de sonido disponibles en memoria para mezcla ultrarrápida
+    sfx_buffers = {}
+    known_files = ["whoosh.wav", "swoosh_soft.wav", "whip_fast.wav", "slide_swish.wav", "zoom_impact.wav", "pop_snap.wav"]
+    for fname in known_files:
+        p = os.path.join(sfx_dir, fname)
+        if os.path.exists(p):
+            try:
+                with wave.open(p, "r") as wf_sfx:
+                    samples = np.frombuffer(wf_sfx.readframes(wf_sfx.getnframes()), dtype=np.int16)
+                    sfx_buffers[fname] = (samples.astype(np.float32) * sfx_volume).astype(np.float32)
+            except Exception:
+                pass
+
+    if not sfx_buffers:
+        return audio_path
 
     ffmpeg_exe = get_ffmpeg_path()
     temp_wav = output_path + ".temp_sfx_base.wav"
@@ -148,16 +190,25 @@ def add_transition_sfx_to_audio(
             voice_samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).copy()
             sr = wf.getframerate()
 
-        with wave.open(sfx_path, "r") as wf_sfx:
-            sfx_samples = np.frombuffer(wf_sfx.readframes(wf_sfx.getnframes()), dtype=np.int16)
-
-        scaled_sfx = (sfx_samples.astype(np.float32) * sfx_volume).astype(np.float32)
-        sfx_len = len(scaled_sfx)
-
         voice_float = voice_samples.astype(np.float32)
-        for t in transition_timestamps:
+
+        for t_idx, t in enumerate(transition_timestamps):
             if t <= 0.2:
                 continue
+
+            # Determinar qué archivo SFX corresponde según el modo
+            if sfx_path and os.path.exists(sfx_path):
+                target_key = os.path.basename(sfx_path)
+            elif sfx_mode == "variety":
+                target_key = VARIETY_SFX_LIST[t_idx % len(VARIETY_SFX_LIST)]
+            elif sfx_mode == "auto":
+                target_key = TRANSITION_SFX_MAP.get(transition_type, "whoosh.wav")
+            else:
+                target_key = sfx_mode if sfx_mode.endswith(".wav") else f"{sfx_mode}.wav"
+
+            scaled_sfx = sfx_buffers.get(target_key, sfx_buffers.get("whoosh.wav", list(sfx_buffers.values())[0]))
+            sfx_len = len(scaled_sfx)
+
             idx = int((t - 0.10) * sr)
             if idx < 0:
                 idx = 0

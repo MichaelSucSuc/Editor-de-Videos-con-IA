@@ -351,19 +351,33 @@ class VideoEditorApp(ctk.CTk):
         self.combo_aspect.set("9:16 Vertical (TikTok / Reels / Shorts)")
         self.combo_aspect.pack(side="left")
 
-        # Checkbox Efectos de Sonido en Transiciones (SFX Whoosh)
+        # Checkbox y Selector de Efectos de Sonido en Transiciones (SFX)
         f_sfx = ctk.CTkFrame(sec3, fg_color="transparent")
         f_sfx.pack(fill="x", padx=15, pady=(4, 8))
         self.var_sfx_enable = ctk.BooleanVar(value=True)
         self.chk_sfx = ctk.CTkCheckBox(
             f_sfx,
-            text="🔊 Efectos de Sonido en Transiciones (SFX Whoosh / Swoosh de cine en cada corte)",
+            text="🔊 Sonidos en Transición (SFX):",
             variable=self.var_sfx_enable,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#06b6d4",
             hover_color="#0891b2"
         )
         self.chk_sfx.pack(side="left")
+
+        sfx_options = [
+            "auto - De acuerdo a la Transición (Inteligente: Swoosh, Látigo, Impacto, Pop)",
+            "variety - Variedad Dinámica (Alternar sonido distinto en cada corte)",
+            "whoosh - Clásico Whoosh de Cine",
+            "swoosh_soft - Suave & Elegante (Fade / Disolución)",
+            "whip_fast - Látigo Rápido (Wipe / Barrido)",
+            "slide_swish - Deslizamiento Dinámico (Slide)",
+            "zoom_impact - Impacto con Graves (Zoom In)",
+            "pop_snap - Pop Moderno (TikTok / Reels)"
+        ]
+        self.combo_sfx = ctk.CTkComboBox(f_sfx, values=sfx_options, width=430)
+        self.combo_sfx.set(sfx_options[0])
+        self.combo_sfx.pack(side="left", padx=(10, 0))
 
         # 5. SECCIÓN 4: EXPORTACIÓN Y PROGRESO
         sec4 = self._create_card("4. Renderizado y Exportación de Video")
@@ -702,10 +716,14 @@ class VideoEditorApp(ctk.CTk):
             if self.var_sfx_enable.get():
                 trans_times = [it["start_time"] for it in preview_schedule if 0.1 < it.get("start_time", 0) < 4.8]
                 if trans_times:
-                    report_progress(15.0, f"🔊 Inyectando SFX Whoosh en transiciones...")
+                    sfx_choice = self.combo_sfx.get().split(" - ")[0].strip()
+                    report_progress(15.0, f"🔊 Inyectando SFX ({sfx_choice}) en transiciones...")
                     temp_sfx_audio = output_path + ".temp_sfx.wav"
                     temp_files.append(temp_sfx_audio)
-                    add_transition_sfx_to_audio(actual_audio_path, temp_sfx_audio, trans_times, sfx_volume=0.35)
+                    add_transition_sfx_to_audio(
+                        actual_audio_path, temp_sfx_audio, trans_times,
+                        transition_type=trans_choice, sfx_mode=sfx_choice, sfx_volume=0.35
+                    )
                     if os.path.exists(temp_sfx_audio):
                         actual_audio_path = temp_sfx_audio
 
@@ -913,17 +931,21 @@ class VideoEditorApp(ctk.CTk):
             motion_choice = self.combo_motion.get().split(" - ")[0].strip()
             schedule = assign_motions_to_schedule(schedule, motion_mode=motion_choice)
 
-            # Inyectar Efectos de Sonido (SFX Whoosh) en Transiciones
+            # Inyectar Efectos de Sonido (SFX) en Transiciones
             if self.var_sfx_enable.get():
                 trans_times = [item["start_time"] for item in schedule if item.get("start_time", 0) > 0.1]
                 if trans_times:
-                    report_progress(4.5, f"🔊 Sincronizando efectos de sonido SFX en {len(trans_times)} transiciones...")
+                    sfx_choice = self.combo_sfx.get().split(" - ")[0].strip()
+                    report_progress(4.5, f"🔊 Sincronizando efectos de sonido SFX ({sfx_choice}) en {len(trans_times)} transiciones...")
                     temp_sfx_audio = os.path.join(os.path.dirname(output_path), "temp_sfx_audio.wav")
                     temp_files.append(temp_sfx_audio)
-                    add_transition_sfx_to_audio(actual_audio_path, temp_sfx_audio, trans_times, sfx_volume=0.35)
+                    add_transition_sfx_to_audio(
+                        actual_audio_path, temp_sfx_audio, trans_times,
+                        transition_type=trans_choice, sfx_mode=sfx_choice, sfx_volume=0.35
+                    )
                     if os.path.exists(temp_sfx_audio):
                         actual_audio_path = temp_sfx_audio
-                        self._append_log(f"✔ Efectos SFX sincronizados en {len(trans_times)} transiciones visuales.")
+                        self._append_log(f"✔ Efectos SFX sincronizados en {len(trans_times)} transiciones visuales ({sfx_choice}).")
 
             # Mezclar Música de Fondo (BGM) con Auto-Ducking Inteligente
             bgm_file = self.bgm_file_path.get()
