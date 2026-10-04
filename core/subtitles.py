@@ -47,7 +47,7 @@ SUBTITLE_STYLES = {
         "alignment": 2,
         "margin_v_ratio": 0.26,
         "uppercase": False,
-        "animation_tag": r"{\fad(100,100)}"
+        "animation_tag": r"{\fad(40,0)}"
     },
     "neon_glow": {
         "name": "Neon Glow (Cyberpunk Cyan & Resplandor)",
@@ -181,6 +181,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for block in srt_blocks:
             sub_list = chunk_srt_block(block, max_words=max_words_per_subtitle)
             expanded_blocks.extend(sub_list)
+
+    # Garantizar separación limpia absoluta (GAP de 45ms) para evitar que un subtítulo
+    # aparezca mientras el anterior está desapareciendo (cero solapamiento visual)
+    GAP = 0.045
+    for i in range(len(expanded_blocks) - 1):
+        curr_b = expanded_blocks[i]
+        next_b = expanded_blocks[i + 1]
+        if curr_b["end_time"] >= next_b["start_time"] - GAP:
+            curr_b["end_time"] = max(curr_b["start_time"] + 0.12, next_b["start_time"] - GAP)
 
     events = []
     anim = style.get("animation_tag", "")

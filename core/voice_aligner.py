@@ -292,20 +292,67 @@ def transcribe_audio_to_srt(
 
     return "\n".join(srt_lines)
 
+def count_phonetic_weight(text: str) -> float:
+    """
+    Calcula el peso fonético de un texto en español basado en núcleos vocálicos
+    y consonantes para modelar la duración hablada real con precisión.
+    """
+    clean = re.sub(r'[^\w\s]', '', text).lower()
+    vowels = len(re.findall(r'[aeiouáéíóúü]', clean))
+    chars = len(clean.replace(' ', ''))
+    return max(1.0, vowels * 1.35 + chars * 0.25)
+
+def detect_voice_activity_bounds(audio_path: str, start_sec: float, duration: float) -> Tuple[float, float]:
+    """
+    Analiza la envolvente de energía acústica RMS en la ventana [start_sec, start_sec + duration]
+    para detectar cuándo comienza a hablar el locutor y cuándo se detiene antes del corte.
+    """
+    try:
+        samples, sr = extract_audio_samples(audio_path, start_sec=start_sec, duration=duration)
+        if len(samples) < sr * 0.1:
+            return start_sec + 0.05, start_sec + max(0.2, duration - 0.06)
+
+        energy, step_t = compute_energy_envelope(samples, sr)
+        e_min = float(np.min(energy))
+        e_max = float(np.max(energy))
+        e_range = e_max - e_min
+
+        if e_range < 1e-4:
+            return start_sec + 0.05, start_sec + max(0.2, duration - 0.06)
+
+        thresh = e_min + 0.12 * e_range
+        active = np.where(energy > thresh)[0]
+
+        if len(active) == 0:
+            return start_sec + 0.05, start_sec + max(0.2, duration - 0.06)
+
+        v_start_offset = active[0] * step_t
+        v_end_offset = min(duration, active[-1] * step_t + 0.10)
+
+        actual_start = start_sec + max(0.0, v_start_offset)
+        actual_end = start_sec + min(duration - 0.04, v_end_offset)
+
+        if actual_end <= actual_start + 0.2:
+            actual_end = actual_start + max(0.3, duration * 0.88)
+
+        return actual_start, actual_end
+    except Exception:
+        return start_sec + 0.05, start_sec + max(0.2, duration - 0.06)
+
 def align_transcript_with_acoustic_analysis(
     srt_blocks: List[Dict[str, Any]],
     audio_path: str,
     max_words_per_chunk: int = 3
 ) -> List[Dict[str, Any]]:
     """
-    Analiza acústicamente la voz con Vosk respetando las marcas de corte del usuario:
-    1. Las marcas de corte [MM:SS] o SRT del usuario determinan los cambios de imágenes.
-    2. Dentro del intervalo de tiempo de cada imagen, la voz se analiza acústicamente para
-       subdividir la frase en ráfagas dinámicas de 2-3 palabras perfectamente sincronizadas
-       con los picos de fonemas reales.
-    3. Ningún subtítulo invade ni se desborda a la siguiente imagen.
+    Sincronización híbrida perfecta:
+    1. Las marcas [MM:SS] del usuario definen los cortes de imagen.
+    2. El texto del usuario proporciona las palabras exactas, puntuación y gramática.
+    3. El audio proporciona la detección acústica real (inicio de voz, pausas y fin).
+    4. Cada frase se subdivide en fragmentos cortos de 2-3 palabras ponderados por fonética silábica.
+    5. Se aplica una separación limpia (GAP de 45ms) entre subtítulos para que NUNCA se solapen visualmente.
     """
-    if not os.path.exists(audio_path):
+    if not os.path.exists(audio_path) or not srt_blocks:
         return srt_blocks
 
     try:
@@ -313,77 +360,87 @@ def align_transcript_with_acoustic_analysis(
     except Exception:
         vosk_words = []
 
-    if not srt_blocks:
-        if not vosk_words:
-            return []
-        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(vosk_words)
-        res = []
-        for i in range(0, len(vosk_words), step):
-            sub = vosk_words[i:i + step]
-            c_start = float(sub[0]["start"])
-            c_end = float(sub[-1]["end"])
-            c_dur = max(0.2, c_end - c_start)
-            txt = " ".join([w["word"] for w in sub])
-            res.append({
-                "index": f"vosk_{i // step + 1}",
-                "start_time": c_start,
-                "end_time": c_start + c_dur,
-                "duration": c_dur,
-                "display_text": txt,
-                "raw_text": txt
-            })
-        return res
-
     aligned_chunks = []
+    ANTI_OVERLAP_GAP = 0.045  # 45 ms de silencio visual para transición nítida e instantánea
 
     for b_idx, block in enumerate(srt_blocks):
         b_start = float(block.get("start_time", 0.0))
         b_end = float(block.get("end_time", b_start + 3.0))
+        b_dur = max(0.2, b_end - b_start)
         b_text = block.get("display_text", block.get("raw_text", "")).strip()
         words = b_text.split()
         if not words:
             continue
 
-        # Filtrar las palabras reconocidas por Vosk correspondientes a la ventana de esta imagen
+        # 1. Detectar inicio y fin real de la voz en este bloque mediante energía RMS
+        v_start, v_end = detect_voice_activity_bounds(audio_path, b_start, b_dur)
+        v_span = max(0.3, v_end - v_start)
+
+        # 2. Dividir la frase en fragmentos dinámicos de 2 a 3 palabras
+        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(words)
+        chunk_texts = [" ".join(words[i:i + step]) for i in range(0, len(words), step)]
+        
+        # 3. Ponderación fonética proporcional a la longitud hablada real
+        weights = [count_phonetic_weight(txt) for txt in chunk_texts]
+        tot_weight = sum(weights)
+
+        # 4. Palabras reconocidas por Vosk en este intervalo para ajuste fino
         block_vosk = [
             w for w in vosk_words 
             if (float(w["start"]) >= b_start - 0.35 and float(w["end"]) <= b_end + 0.35)
         ]
 
-        if block_vosk:
-            timed_words = align_words_to_vosk(words, block_vosk, total_audio_duration=b_end - b_start)
-        else:
-            # Fallback acústico para este bloque si no se reconocieron palabras
-            span = max(0.4, b_end - b_start)
-            step_t = span / len(words)
-            timed_words = [
-                {"word": w, "start": b_start + i * step_t, "end": b_start + (i + 1) * step_t}
-                for i, w in enumerate(words)
-            ]
+        # 5. Distribuir temporalmente los fragmentos
+        block_chunks = []
+        curr_t = v_start
 
-        # Asegurar que todas las palabras queden estrictamente dentro del marco de la imagen
-        for tw in timed_words:
-            tw["start"] = max(b_start, min(b_end - 0.08, float(tw["start"])))
-            tw["end"] = max(tw["start"] + 0.15, min(b_end, float(tw["end"])))
+        for i, (ctxt, w_val) in enumerate(zip(chunk_texts, weights)):
+            c_dur = v_span * (w_val / tot_weight)
+            c_start = curr_t
+            c_end = curr_t + c_dur
 
-        # Subdividir en ráfagas de 2 a 3 palabras
-        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(timed_words)
-        for i in range(0, len(timed_words), step):
-            sub_chunk = timed_words[i:i + step]
-            c_start = sub_chunk[0]["start"]
-            c_end = sub_chunk[-1]["end"]
-            c_dur = max(0.18, c_end - c_start)
-            chunk_str = " ".join([item["word"] for item in sub_chunk])
+            # Si Vosk detectó la primera palabra de este fragmento, ajustar inicio a la voz real
+            if block_vosk:
+                first_norm = normalize_word(ctxt.split()[0])
+                for vw in block_vosk:
+                    if normalize_word(vw["word"]) == first_norm:
+                        if abs(float(vw["start"]) - c_start) < 0.6:
+                            c_start = max(b_start, float(vw["start"]))
+                            c_end = max(c_start + 0.2, c_end)
+                        break
 
-            final_end = min(b_end, c_start + c_dur)
-            aligned_chunks.append({
-                "index": f"{block.get('index', b_idx + 1)}_{i // step + 1}",
+            block_chunks.append({
+                "index": f"{block.get('index', b_idx + 1)}_{i + 1}",
                 "start_time": c_start,
-                "end_time": final_end,
-                "duration": max(0.12, final_end - c_start),
-                "display_text": chunk_str,
-                "raw_text": chunk_str
+                "end_time": c_end,
+                "duration": max(0.15, c_end - c_start),
+                "display_text": ctxt,
+                "raw_text": ctxt
             })
+            curr_t = c_end
+
+        # 6. CRÍTICO: Eliminar cualquier solapamiento visual entre fragmentos consecutivos
+        for i in range(len(block_chunks) - 1):
+            next_start = block_chunks[i + 1]["start_time"]
+            if block_chunks[i]["end_time"] >= next_start - ANTI_OVERLAP_GAP:
+                block_chunks[i]["end_time"] = max(block_chunks[i]["start_time"] + 0.12, next_start - ANTI_OVERLAP_GAP)
+            block_chunks[i]["duration"] = block_chunks[i]["end_time"] - block_chunks[i]["start_time"]
+
+        # Asegurar que el último fragmento de la imagen termine limpiamente antes del corte
+        if block_chunks:
+            block_chunks[-1]["end_time"] = min(b_end - ANTI_OVERLAP_GAP, block_chunks[-1]["end_time"])
+            block_chunks[-1]["duration"] = max(0.12, block_chunks[-1]["end_time"] - block_chunks[-1]["start_time"])
+
+        aligned_chunks.extend(block_chunks)
+
+    # 7. FILTRO GLOBAL: Garantizar separación limpia absoluta entre TODOS los subtítulos consecutivos del video
+    # (Evita que un subtítulo aparezca mientras el anterior está desapareciendo)
+    for i in range(len(aligned_chunks) - 1):
+        c1 = aligned_chunks[i]
+        c2 = aligned_chunks[i + 1]
+        if c1["end_time"] >= c2["start_time"] - ANTI_OVERLAP_GAP:
+            c1["end_time"] = max(c1["start_time"] + 0.12, c2["start_time"] - ANTI_OVERLAP_GAP)
+            c1["duration"] = max(0.10, c1["end_time"] - c1["start_time"])
 
     return aligned_chunks
 
