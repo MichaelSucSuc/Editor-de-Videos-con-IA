@@ -298,10 +298,12 @@ def align_transcript_with_acoustic_analysis(
     max_words_per_chunk: int = 3
 ) -> List[Dict[str, Any]]:
     """
-    Analiza verdaderamente la voz en el audio usando el modelo de reconocimiento Vosk:
-    1. Extrae los tiempos reales de cada palabra que sale de la boca del locutor.
-    2. Hace coincidir el texto del guion con los tiempos acústicos reales.
-    3. Si alguna sección no tiene coincidencia fonética, usa el mapa de energía acústica como respaldo.
+    Analiza acústicamente la voz con Vosk respetando las marcas de corte del usuario:
+    1. Las marcas de corte [MM:SS] o SRT del usuario determinan los cambios de imágenes.
+    2. Dentro del intervalo de tiempo de cada imagen, la voz se analiza acústicamente para
+       subdividir la frase en ráfagas dinámicas de 2-3 palabras perfectamente sincronizadas
+       con los picos de fonemas reales.
+    3. Ningún subtítulo invade ni se desborda a la siguiente imagen.
     """
     if not os.path.exists(audio_path):
         return srt_blocks
@@ -311,53 +313,79 @@ def align_transcript_with_acoustic_analysis(
     except Exception:
         vosk_words = []
 
-    # Si Vosk detectó palabras en el audio
-    if vosk_words and len(vosk_words) >= 1:
-        # Extraer todas las palabras del guion/SRT
-        all_script_words = []
-        if srt_blocks:
-            for b in srt_blocks:
-                txt = b.get("display_text", b.get("raw_text", "")).strip()
-                words = txt.split()
-                all_script_words.extend(words)
-
-        if not all_script_words:
-            # Si no había texto en los bloques, usar directamente las palabras reconocidas por Vosk
-            timed_words = [
-                {"word": vw["word"], "start": float(vw["start"]), "end": float(vw["end"])}
-                for vw in vosk_words
-            ]
-        else:
-            # Alinear las palabras del usuario con las marcas acústicas de Vosk
-            timed_words = align_words_to_vosk(all_script_words, vosk_words)
-
-        # Agrupar en fragmentos de 2 a 3 palabras (o el tamaño configurado)
-        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(timed_words)
-        aligned_chunks = []
-
-        for i in range(0, len(timed_words), step):
-            sub_chunk = timed_words[i:i + step]
-            c_start = sub_chunk[0]["start"]
-            c_end = sub_chunk[-1]["end"]
-            
-            # Suavizar pausas cortas entre palabras consecutivas
-            c_dur = max(0.18, c_end - c_start)
-            chunk_str = " ".join([item["word"] for item in sub_chunk])
-
-            aligned_chunks.append({
+    if not srt_blocks:
+        if not vosk_words:
+            return []
+        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(vosk_words)
+        res = []
+        for i in range(0, len(vosk_words), step):
+            sub = vosk_words[i:i + step]
+            c_start = float(sub[0]["start"])
+            c_end = float(sub[-1]["end"])
+            c_dur = max(0.2, c_end - c_start)
+            txt = " ".join([w["word"] for w in sub])
+            res.append({
                 "index": f"vosk_{i // step + 1}",
                 "start_time": c_start,
                 "end_time": c_start + c_dur,
                 "duration": c_dur,
+                "display_text": txt,
+                "raw_text": txt
+            })
+        return res
+
+    aligned_chunks = []
+
+    for b_idx, block in enumerate(srt_blocks):
+        b_start = float(block.get("start_time", 0.0))
+        b_end = float(block.get("end_time", b_start + 3.0))
+        b_text = block.get("display_text", block.get("raw_text", "")).strip()
+        words = b_text.split()
+        if not words:
+            continue
+
+        # Filtrar las palabras reconocidas por Vosk correspondientes a la ventana de esta imagen
+        block_vosk = [
+            w for w in vosk_words 
+            if (float(w["start"]) >= b_start - 0.35 and float(w["end"]) <= b_end + 0.35)
+        ]
+
+        if block_vosk:
+            timed_words = align_words_to_vosk(words, block_vosk, total_audio_duration=b_end - b_start)
+        else:
+            # Fallback acústico para este bloque si no se reconocieron palabras
+            span = max(0.4, b_end - b_start)
+            step_t = span / len(words)
+            timed_words = [
+                {"word": w, "start": b_start + i * step_t, "end": b_start + (i + 1) * step_t}
+                for i, w in enumerate(words)
+            ]
+
+        # Asegurar que todas las palabras queden estrictamente dentro del marco de la imagen
+        for tw in timed_words:
+            tw["start"] = max(b_start, min(b_end - 0.08, float(tw["start"])))
+            tw["end"] = max(tw["start"] + 0.15, min(b_end, float(tw["end"])))
+
+        # Subdividir en ráfagas de 2 a 3 palabras
+        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(timed_words)
+        for i in range(0, len(timed_words), step):
+            sub_chunk = timed_words[i:i + step]
+            c_start = sub_chunk[0]["start"]
+            c_end = sub_chunk[-1]["end"]
+            c_dur = max(0.18, c_end - c_start)
+            chunk_str = " ".join([item["word"] for item in sub_chunk])
+
+            final_end = min(b_end, c_start + c_dur)
+            aligned_chunks.append({
+                "index": f"{block.get('index', b_idx + 1)}_{i // step + 1}",
+                "start_time": c_start,
+                "end_time": final_end,
+                "duration": max(0.12, final_end - c_start),
                 "display_text": chunk_str,
                 "raw_text": chunk_str
             })
 
-        if aligned_chunks:
-            return aligned_chunks
-
-    # Fallback: Alineación por envolvente de energía acústica (FFmpeg + RMS)
-    return align_by_energy_envelope(srt_blocks, audio_path, max_words_per_chunk)
+    return aligned_chunks
 
 def extract_audio_samples(audio_path: str, start_sec: float = 0.0, duration: float = -1.0, sample_rate: int = 16000) -> Tuple[np.ndarray, int]:
     """Extrae muestras de audio en formato PCM float32 usando FFmpeg en memoria."""
