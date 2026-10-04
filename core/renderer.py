@@ -83,7 +83,46 @@ def render_video_pipeline(
             
             clip_filename = os.path.join(temp_dir, f"clip_{idx:03d}.mp4")
 
-            if enable_3d_parallax:
+            # Determinar si es video o imagen fija
+            is_video = clip["image"].get("media_type") == "video"
+            if not is_video:
+                ext = os.path.splitext(img_path)[1].lower()
+                is_video = ext in {'.mp4', '.mov', '.webm', '.avi', '.mkv', '.m4v'}
+
+            if is_video:
+                update_progress(
+                    5.0 + (idx / total_clips) * 45.0, 
+                    f"Procesando clip de video {idx} de {total_clips} (repetición en bucle si es corto)..."
+                )
+                # Escalar, centrar y forzar fps al video
+                vf_video = (
+                    f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                    f"crop={width}:{height},"
+                    f"setsar=1,"
+                    f"fps={fps}"
+                )
+                # -stream_loop -1 repite en bucle el video tantas veces como sea necesario
+                # -t corta exactamente en la duración requerida por el guion
+                # -an remueve el audio original del video para escuchar solo la voz
+                cmd_clip = [
+                    ffmpeg_exe,
+                    "-y",
+                    "-stream_loop", "-1",
+                    "-i", img_path,
+                    "-t", f"{clip_dur:.3f}",
+                    "-vf", vf_video,
+                    "-an",
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-preset", "veryfast",
+                    "-r", str(fps),
+                    clip_filename
+                ]
+                proc = subprocess.run(cmd_clip, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore")
+                if proc.returncode != 0:
+                    raise RuntimeError(f"Error procesando video {idx} ({os.path.basename(img_path)}): {proc.stderr}")
+
+            elif enable_3d_parallax:
                 update_progress(
                     5.0 + (idx / total_clips) * 45.0, 
                     f"Generando profundidad 3D Parallax en imagen {idx} de {total_clips}..."

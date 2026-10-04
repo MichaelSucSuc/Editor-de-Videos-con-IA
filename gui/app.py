@@ -65,13 +65,30 @@ class VideoEditorApp(ctk.CTk):
         self.main_scroll.pack(fill="both", expand=True, padx=20, pady=5)
 
         # 2. SECCIÓN 1: ARCHIVOS Y RECURSOS
-        sec1 = self._create_card("1. Archivos del Proyecto (Imágenes, Audio y Transcripción)")
+        sec1 = self._create_card("1. Archivos del Proyecto (Fotos, Videos, Audio y Subtítulos)")
 
-        # Fila Imágenes
+        # Fila Medios (Fotos / Videos)
         f_img = ctk.CTkFrame(sec1, fg_color="transparent")
         f_img.pack(fill="x", padx=15, pady=6)
-        btn_img = ctk.CTkButton(f_img, text="📁 Seleccionar Carpeta de Imágenes", width=250, command=self._select_images_folder)
+        btn_img = ctk.CTkButton(f_img, text="📁 Seleccionar Medios (Fotos o Videos)", width=260, command=self._select_images_folder)
         btn_img.pack(side="left")
+
+        lbl_filter = ctk.CTkLabel(f_img, text="Tipo:", font=ctk.CTkFont(weight="bold"), padx=10)
+        lbl_filter.pack(side="left")
+
+        self.combo_media_type = ctk.CTkComboBox(
+            f_img,
+            values=[
+                "all - Detectar Fotos y Videos",
+                "videos - Solo Videos (.mp4, .mov, etc.)",
+                "images - Solo Fotos / Imágenes"
+            ],
+            width=230,
+            command=self._on_media_type_changed
+        )
+        self.combo_media_type.set("all - Detectar Fotos y Videos")
+        self.combo_media_type.pack(side="left")
+
         self.lbl_img_status = ctk.CTkLabel(f_img, text="Ninguna carpeta seleccionada", text_color="#94a3b8", anchor="w")
         self.lbl_img_status.pack(side="left", padx=15, fill="x", expand=True)
 
@@ -331,23 +348,44 @@ class VideoEditorApp(ctk.CTk):
 
     # Handlers de Archivos
     def _select_images_folder(self):
-        folder = filedialog.askdirectory(title="Seleccionar Carpeta con Imágenes IA")
+        folder = filedialog.askdirectory(title="Seleccionar Carpeta con Fotos o Videos")
         if folder:
             self.images_folder_path.set(folder)
-            self.images_list = scan_and_sort_images(folder)
-            count = len(self.images_list)
-            if count > 0:
-                first = self.images_list[0]["filename"]
-                last = self.images_list[-1]["filename"]
-                self.lbl_img_status.configure(
-                    text=f"✔ {count} imágenes encontradas y ordenadas ({first} ... {last})",
-                    text_color="#4ade80"
-                )
-            else:
-                self.lbl_img_status.configure(
-                    text="⚠ No se encontraron imágenes válidas en la carpeta seleccionada.",
-                    text_color="#f87171"
-                )
+            self._reload_media_list()
+
+    def _on_media_type_changed(self, choice=None):
+        if self.images_folder_path.get():
+            self._reload_media_list()
+
+    def _reload_media_list(self):
+        folder = self.images_folder_path.get()
+        if not folder or not os.path.exists(folder):
+            return
+        m_filter = self.combo_media_type.get().split(" - ")[0].strip()
+        from core.sorter import scan_and_sort_media
+        self.images_list = scan_and_sort_media(folder, media_type_filter=m_filter)
+        count = len(self.images_list)
+        if count > 0:
+            first = self.images_list[0]["filename"]
+            last = self.images_list[-1]["filename"]
+            v_count = sum(1 for x in self.images_list if x.get("media_type") == "video")
+            i_count = count - v_count
+            det = []
+            if v_count > 0:
+                det.append(f"{v_count} video(s)")
+            if i_count > 0:
+                det.append(f"{i_count} foto(s)")
+            desc = " y ".join(det) if det else "archivos"
+            self.lbl_img_status.configure(
+                text=f"✔ {count} archivos ({desc}) ordenados ({first} ... {last})",
+                text_color="#4ade80"
+            )
+            self._append_log(f"📁 Medios detectados: {count} archivos ({desc})")
+        else:
+            self.lbl_img_status.configure(
+                text="⚠ No se encontraron archivos válidos con el filtro actual.",
+                text_color="#f87171"
+            )
 
     def _select_audio_file(self):
         file = filedialog.askopenfilename(
