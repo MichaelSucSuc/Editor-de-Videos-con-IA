@@ -121,6 +121,14 @@ def chunk_srt_block(block: Dict[str, Any], max_words: int = 3) -> List[Dict[str,
 
 from core.voice_aligner import align_transcript_blocks_to_audio
 
+HIGHLIGHT_COLORS = {
+    "yellow": "&H0000FFFF&",  # Amarillo Neón Hormozi (BGR)
+    "green": "&H0039FF14&",   # Verde Lima Viral (BGR)
+    "cyan": "&H00FFFF00&",    # Cyan Neón Resplandeciente (BGR)
+    "orange": "&H0000A5FF&",  # Naranja Fuego (BGR)
+    "none": ""                # Desactivado / Color sólido
+}
+
 def generate_ass_file(
     srt_blocks: List[Dict[str, Any]], 
     output_ass_path: str,
@@ -129,7 +137,8 @@ def generate_ass_file(
     video_height: int = 1920,
     max_words_per_subtitle: int = 3,
     position_mode: str = "safe_tiktok",
-    audio_path: str = None
+    audio_path: str = None,
+    highlight_color: str = "yellow"
 ) -> str:
     """
     Convierte una lista de bloques SRT en un archivo de subtítulos .ass avanzado:
@@ -137,6 +146,7 @@ def generate_ass_file(
     2. Subdivide frases largas en ráfagas de 2-3 palabras para dinamismo viral continuo.
     3. Coloca los subtítulos en una posición elevada óptima (lejos de la barra inferior de TikTok).
     4. Aplica tipografía de gran tamaño con animación de impacto (bounce/pop).
+    5. Resalta en vivo cada palabra individual al momento exacto de ser pronunciada (Efecto Karaoke Hormozi).
     """
     style = SUBTITLE_STYLES.get(style_key, SUBTITLE_STYLES["hormozi"])
     border_style = style.get("border_style", 1)
@@ -197,19 +207,52 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     events = []
     anim = style.get("animation_tag", "")
+    hl_hex = HIGHLIGHT_COLORS.get(highlight_color.lower(), "")
+    primary_color = style.get("primary_color", "&H00FFFFFF&")
+    default_text_color = "&H00FFFFFF&" if (hl_hex and style_key == "hormozi") else primary_color
 
     for b in expanded_blocks:
-        start_ass = format_ass_timestamp(b["start_time"])
-        end_ass = format_ass_timestamp(b["end_time"])
+        words_timing = b.get("words_timing", [])
 
-        text = b.get("display_text", b.get("raw_text", "")).strip()
-        if style.get("uppercase", False):
-            text = text.upper()
+        # Modo Karaoke / Resaltado dinámico palabra por palabra
+        if hl_hex and len(words_timing) > 1:
+            for h_idx in range(len(words_timing)):
+                w_curr = words_timing[h_idx]
+                w_start = w_curr["start"]
+                w_end = words_timing[h_idx + 1]["start"] if h_idx + 1 < len(words_timing) else b["end_time"]
 
-        text = text.replace('\n', r'\N')
-        line_content = f"{anim}{text}" if anim else text
-        event_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{line_content}"
-        events.append(event_line)
+                w_start = max(b["start_time"], w_start)
+                w_end = min(b["end_time"], w_end)
+                if w_end <= w_start:
+                    w_end = w_start + 0.15
+
+                start_ass = format_ass_timestamp(w_start)
+                end_ass = format_ass_timestamp(w_end)
+
+                line_parts = []
+                for i, w_obj in enumerate(words_timing):
+                    word_str = w_obj["word"].upper() if style.get("uppercase", False) else w_obj["word"]
+                    if i == h_idx:
+                        line_parts.append(r"{\c" + hl_hex + r"\t(0,40,\fscx108\fscy108)}" + word_str + r"{\fscx100\fscy100\c" + default_text_color + r"}")
+                    else:
+                        line_parts.append(word_str)
+
+                text_content = r"{\c" + default_text_color + r"}" + " ".join(line_parts)
+                text_content = text_content.replace('\n', r'\N')
+                events.append(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{text_content}")
+
+        else:
+            # Modo estándar (toda la frase visible)
+            start_ass = format_ass_timestamp(b["start_time"])
+            end_ass = format_ass_timestamp(b["end_time"])
+
+            text = b.get("display_text", b.get("raw_text", "")).strip()
+            if style.get("uppercase", False):
+                text = text.upper()
+
+            text = text.replace('\n', r'\N')
+            line_content = f"{anim}{text}" if anim else text
+            events.append(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{line_content}")
 
     full_ass_content = header + "\n".join(events) + "\n"
 

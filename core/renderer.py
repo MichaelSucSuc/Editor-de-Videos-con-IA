@@ -41,7 +41,8 @@ def render_video_pipeline(
     transition_duration: float = 0.35,
     enable_3d_parallax: bool = False,
     fps: int = 30,
-    progress_callback: Optional[Callable[[float, str], None]] = None
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+    fast_preview: bool = False
 ) -> str:
     """
     Orquesta el pipeline completo de renderizado:
@@ -60,6 +61,10 @@ def render_video_pipeline(
 
     # Crear directorio temporal para fragmentos
     temp_dir = tempfile.mkdtemp(prefix="editor_ia_")
+    
+    clip_preset = "ultrafast" if fast_preview else "veryfast"
+    final_preset = "ultrafast" if fast_preview else "medium"
+    final_crf = "26" if fast_preview else "18"
     
     try:
         def update_progress(pct: float, msg: str):
@@ -114,7 +119,7 @@ def render_video_pipeline(
                     "-an",
                     "-c:v", "libx264",
                     "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast",
+                    "-preset", clip_preset,
                     "-r", str(fps),
                     clip_filename
                 ]
@@ -153,7 +158,7 @@ def render_video_pipeline(
                     "-t", f"{clip_dur:.3f}",
                     "-c:v", "libx264",
                     "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast",
+                    "-preset", clip_preset,
                     "-r", str(fps),
                     clip_filename
                 ]
@@ -226,7 +231,7 @@ def render_video_pipeline(
                 "-filter_complex", filter_complex,
                 "-map", "[vout]",
                 "-c:v", "libx264",
-                "-preset", "veryfast",
+                "-preset", clip_preset,
                 "-pix_fmt", "yuv420p",
                 merged_video_path
             ]
@@ -264,8 +269,8 @@ def render_video_pipeline(
             "-i", audio_path,
             *vf_arg,
             "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "18",  # Alta calidad visual
+            "-preset", final_preset,
+            "-crf", final_crf,  # Calidad visual
             "-c:a", "aac",
             "-b:a", "192k",
             "-pix_fmt", "yuv420p",

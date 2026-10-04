@@ -547,6 +547,7 @@ def align_transcript_with_acoustic_analysis(
                 "duration": max(0.12, c_end - c_start),
                 "display_text": c_text,
                 "raw_text": c_text,
+                "words_timing": [{"word": w["word"], "start": w["start"], "end": w["end"]} for w in sub],
                 "_already_chunked": True
             })
 
