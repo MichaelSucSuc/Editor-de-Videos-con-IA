@@ -50,22 +50,23 @@ def format_srt_timestamp(seconds: float) -> str:
     return f"{hrs:02d}:{mins:02d}:{int(secs):02d},{millis:03d}"
 
 
-def parse_srt(srt_content: str) -> List[Dict[str, Any]]:
+def parse_srt(srt_content: str, total_duration: Optional[float] = None) -> List[Dict[str, Any]]:
     """
     Parsea subtítulos soportando dos formatos:
     1. Formato SRT estándar (con 00:00:00,000 --> 00:00:02,000)
     2. Formato simple con marcas de tiempo: [MM:SS] o [HH:MM:SS] Texto
+    Si se proporciona total_duration, la última línea se extiende para cubrir hasta el final del audio.
     """
     blocks = []
     content = srt_content.replace('\r\n', '\n').replace('\r', '\n').strip()
     if not content:
         return []
 
-    # Detectar si es formato simple de corchetes [MM:SS] texto
-    bracket_pattern = re.compile(r'\[(\d{1,2}:\d{2}(?::\d{2})?(?:[,\.]\d{1,3})?)\]\s*([^\n\[]+)', re.MULTILINE)
+    # Detectar si es formato simple de corchetes [MM:SS] texto (monolínea o multilínea)
+    bracket_pattern = re.compile(r'\[(\d{1,2}:\d{2}(?::\d{2})?(?:[,\.]\d{1,3})?)\]\s*([\s\S]*?)(?=\[\d{1,2}:\d{2}|\Z)')
     bracket_matches = bracket_pattern.findall(content)
 
-    if len(bracket_matches) >= 2:
+    if len(bracket_matches) >= 1:
         # Procesar formato [MM:SS] Frase
         raw_items = []
         for time_str, text_str in bracket_matches:
@@ -79,7 +80,10 @@ def parse_srt(srt_content: str) -> List[Dict[str, Any]]:
             if idx + 1 < len(raw_items):
                 end_sec = raw_items[idx + 1][0]
             else:
-                end_sec = start_sec + 3.0  # Fallback para la última línea si no se ajusta con audio
+                if total_duration and total_duration > start_sec:
+                    end_sec = total_duration
+                else:
+                    end_sec = start_sec + 3.0
 
             duration = max(0.1, end_sec - start_sec)
             

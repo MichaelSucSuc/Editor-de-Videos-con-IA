@@ -179,8 +179,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     else:
         expanded_blocks = []
         for block in srt_blocks:
-            sub_list = chunk_srt_block(block, max_words=max_words_per_subtitle)
-            expanded_blocks.extend(sub_list)
+            if block.get("_already_chunked"):
+                expanded_blocks.append(block)
+            else:
+                sub_list = chunk_srt_block(block, max_words=max_words_per_subtitle)
+                expanded_blocks.extend(sub_list)
 
     # Garantizar separación limpia absoluta (GAP de 45ms) para evitar que un subtítulo
     # aparezca mientras el anterior está desapareciendo (cero solapamiento visual)

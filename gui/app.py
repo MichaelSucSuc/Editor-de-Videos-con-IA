@@ -14,6 +14,7 @@ from core.motion_engine import assign_motions_to_schedule
 from core.subtitles import SUBTITLE_STYLES, generate_ass_file
 from core.transitions import TRANSITION_TYPES
 from core.renderer import render_video_pipeline, get_audio_duration
+from core.audio_processor import master_voiceover_audio
 
 
 # Configuración visual global
@@ -101,6 +102,20 @@ class VideoEditorApp(ctk.CTk):
         btn_aud.pack(side="left")
         self.lbl_aud_status = ctk.CTkLabel(f_aud, text="Ningún archivo de audio seleccionado (.mp3 / .wav)", text_color="#94a3b8", anchor="w")
         self.lbl_aud_status.pack(side="left", padx=15, fill="x", expand=True)
+
+        # Opciones de Audio (Masterización y Calibración Pro)
+        f_aud_opts = ctk.CTkFrame(sec1, fg_color="transparent")
+        f_aud_opts.pack(fill="x", padx=15, pady=(2, 6))
+        self.var_master_audio = ctk.BooleanVar(value=True)
+        self.chk_master = ctk.CTkCheckBox(
+            f_aud_opts,
+            text="🎚️ Modularizar, Calibrar y Masterizar Audio con IA (Ecualizador Pro, Compresor y -14 LUFS)",
+            variable=self.var_master_audio,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1"
+        )
+        self.chk_master.pack(side="left")
 
         # Fila SRT (Archivo o Texto pegado)
         f_srt = ctk.CTkFrame(sec1, fg_color="transparent")
@@ -513,19 +528,37 @@ class VideoEditorApp(ctk.CTk):
         thread.start()
 
     def _run_pipeline_worker(self, output_path: str):
+        temp_mastered_audio = None
+        ass_path = None
         try:
             def report_progress(pct: float, msg: str):
                 self.after(0, lambda: self._update_gui_progress(pct, msg))
                 self._append_log(f"[{int(pct)}%] {msg}")
 
+            audio_path = self.audio_file_path.get()
+            actual_audio_path = audio_path
+
+            # 0. Modularización, Calibración y Masterización Profesional del Audio
+            if self.var_master_audio.get():
+                report_progress(2.0, "🎚️ Calibrando y masterizando audio con IA (-14 LUFS, EQ, Compresor)...")
+                self._append_log("Masterizando audio: Filtro paso-alto 80Hz, ecualizador de presencia vocal, compresión dinámica y normalización EBU R128 (-14 LUFS)...")
+                temp_mastered_audio = os.path.join(os.path.dirname(output_path), "temp_mastered_voice.wav")
+                try:
+                    master_voiceover_audio(audio_path, temp_mastered_audio, target_lufs=-14.0)
+                    if os.path.exists(temp_mastered_audio):
+                        actual_audio_path = temp_mastered_audio
+                        self.audio_duration = get_audio_duration(actual_audio_path)
+                        self._append_log(f"✔ Audio calibrado y masterizado con éxito (Duración: {self.audio_duration:.2f}s).")
+                except Exception as e_m:
+                    self._append_log(f"⚠ Aviso en masterización: {e_m}. Se usará audio original.")
+
             # 1. Leer y parsear SRT (de la caja de texto o archivo)
             srt_content = self.txt_srt.get("1.0", "end").strip()
-            srt_blocks = parse_srt(srt_content) if srt_content else []
+            srt_blocks = parse_srt(srt_content, total_duration=self.audio_duration) if srt_content else []
             self._append_log(f"Bloques de texto/subtítulos base parseados: {len(srt_blocks)}")
 
             chunk_val = int(self.combo_chunk.get().split(" - ")[0].strip())
             pos_val = self.combo_pos.get().split(" - ")[0].strip()
-            audio_path = self.audio_file_path.get()
 
             # 2. Alinear imágenes según las marcas exactas del usuario [MM:SS]
             report_progress(3.0, "Sincronizando cambios de imágenes según marcas [MM:SS]...")
@@ -544,8 +577,7 @@ class VideoEditorApp(ctk.CTk):
             aspect_choice = "9:16" if "9:16" in self.combo_aspect.get() else "16:9"
             trans_choice = self.combo_transitions.get().split(" - ")[0].strip()
 
-            # 5. Subtítulos estilizados ASS (Analizados acústicamente por bloques de imagen)
-            ass_path = None
+            # 5. Subtítulos estilizados ASS (Sincronización acústica frase por frase anclada)
             if self.var_sub_enable.get() and srt_blocks:
                 style_key = self.combo_styles.get().split(" - ")[0].strip()
                 temp_ass_dir = os.path.dirname(output_path)
@@ -554,15 +586,16 @@ class VideoEditorApp(ctk.CTk):
                 w = 1080 if aspect_choice == "9:16" else 1920
                 h = 1920 if aspect_choice == "9:16" else 1080
 
-                report_progress(6.0, "🎙️ Analizando voz y alineando subtítulos al milisegundo...")
-                self._append_log("Analizando acústicamente la voz para sincronizar cada subtítulo con precisión...")
+                report_progress(6.0, "🎙️ Analizando voz y sincronizando subtítulos al milisegundo...")
+                self._append_log("Analizando acústicamente la voz y correlacionando con el guion para sincronización perfecta...")
                 
                 aligned_subtitle_chunks = align_transcript_with_acoustic_analysis(
                     srt_blocks=srt_blocks,
-                    audio_path=audio_path,
-                    max_words_per_chunk=chunk_val
+                    audio_path=actual_audio_path,
+                    max_words_per_chunk=chunk_val,
+                    total_audio_duration=self.audio_duration
                 )
-                self._append_log(f"✓ Subtítulos sincronizados con la voz: {len(aligned_subtitle_chunks)} ráfagas generadas (sin desbordar imágenes).")
+                self._append_log(f"✓ Subtítulos sincronizados: {len(aligned_subtitle_chunks)} ráfagas generadas (sin desfases ni solapamiento).")
 
                 generate_ass_file(
                     srt_blocks=aligned_subtitle_chunks,
@@ -579,7 +612,7 @@ class VideoEditorApp(ctk.CTk):
             # 6. Renderizar video
             render_video_pipeline(
                 schedule=schedule,
-                audio_path=self.audio_file_path.get(),
+                audio_path=actual_audio_path,
                 output_path=output_path,
                 subtitle_ass_path=ass_path,
                 aspect_ratio=aspect_choice,
@@ -590,20 +623,24 @@ class VideoEditorApp(ctk.CTk):
                 progress_callback=report_progress
             )
 
-            # Eliminar ASS temporal si existe
-            if ass_path and os.path.exists(ass_path):
-                try:
-                    os.remove(ass_path)
-                except Exception:
-                    pass
-
             self.after(0, self._render_finished_success)
 
         except Exception as e:
             full_trace = traceback.format_exc()
             self._append_log(f"❌ ERROR DURANTE EL RENDERIZADO:\n{full_trace}")
             self.after(0, lambda err=str(e), trace=full_trace: self._render_finished_error(err, trace))
-
+        finally:
+            # Eliminar archivos temporales de forma segura
+            if ass_path and os.path.exists(ass_path):
+                try:
+                    os.remove(ass_path)
+                except Exception:
+                    pass
+            if temp_mastered_audio and os.path.exists(temp_mastered_audio):
+                try:
+                    os.remove(temp_mastered_audio)
+                except Exception:
+                    pass
     def _update_gui_progress(self, pct: float, msg: str):
         self.progress_bar.set(pct / 100.0)
         self.lbl_render_status.configure(text=f"{int(pct)}% - {msg}")

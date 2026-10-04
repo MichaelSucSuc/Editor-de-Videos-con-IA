@@ -100,21 +100,32 @@ def extract_vosk_word_timestamps(audio_path: str, progress_callback=None) -> Lis
 def align_words_to_vosk(
     script_words: List[str], 
     vosk_words: List[Dict[str, Any]], 
-    total_audio_duration: float = 0.0
+    total_audio_duration: float = 0.0,
+    window_start: float = 0.0,
+    window_end: float = 0.0
 ) -> List[Dict[str, Any]]:
     """
     Alinea una lista de palabras de un guion/texto con los tiempos acústicos reales de Vosk.
     Usa coincidencia de secuencias (difflib) para anclar puntos clave e intercala el resto
-    sobre la línea de tiempo fonética real sin desfases acumulativos.
+    sobre la línea de tiempo fonética real dentro de la ventana [window_start, window_end].
     """
+    if not script_words:
+        return []
+
+    if window_end <= 0:
+        window_end = total_audio_duration if total_audio_duration > window_start else (window_start + max(1.5, 0.4 * len(script_words)))
+
     if not vosk_words:
-        # Fallback sin Vosk: distribución uniforme
+        # Fallback sin detecciones en esta ventana: distribución suave y proporcional según longitud de palabra
         res = []
-        cur = 0.0
-        step = max(0.2, (total_audio_duration / max(1, len(script_words)))) if total_audio_duration > 0 else 0.35
-        for w in script_words:
-            res.append({"word": w, "start": cur, "end": cur + step})
-            cur += step
+        cur = window_start + 0.04
+        available_span = max(0.2, (window_end - cur - 0.05)) if window_end > cur else 0.4 * len(script_words)
+        weights = [max(1, len(w)) for w in script_words]
+        total_w = sum(weights)
+        for w, weight in zip(script_words, weights):
+            dur = available_span * (weight / total_w)
+            res.append({"word": w, "start": cur, "end": cur + dur})
+            cur += dur
         return res
 
     norm_s = [normalize_word(w) for w in script_words]
@@ -133,15 +144,19 @@ def align_words_to_vosk(
             s_i = m.a + k
             v_i = m.b + k
             vw = vosk_words[v_i]
+            v_start = max(window_start, float(vw["start"]))
+            v_end = min(window_end, float(vw["end"])) if window_end > 0 else float(vw["end"])
+            if v_end <= v_start:
+                v_end = v_start + 0.22
             aligned_words[s_i] = {
                 "word": script_words[s_i],
-                "start": float(vw["start"]),
-                "end": float(vw["end"])
+                "start": v_start,
+                "end": v_end
             }
             anchors.append((s_i, v_i))
 
-    # Si hay muy pocas coincidencias exactas (menos del 20%), mapear proporcionalmente
-    if len(anchors) < max(2, int(len(script_words) * 0.20)):
+    # Si hay muy pocas coincidencias exactas (menos del 15%), mapear proporcionalmente sobre los vosk_words disponibles
+    if len(anchors) < max(2, int(len(script_words) * 0.15)):
         res = []
         n_vosk = len(vosk_words)
         n_script = len(script_words)
@@ -149,10 +164,14 @@ def align_words_to_vosk(
             ratio = i / max(1, n_script - 1) if n_script > 1 else 0.0
             v_idx = int(round(ratio * (n_vosk - 1)))
             vw = vosk_words[min(n_vosk - 1, max(0, v_idx))]
+            v_start = max(window_start, float(vw["start"]))
+            v_end = min(window_end, float(vw["end"])) if window_end > 0 else float(vw["end"])
+            if v_end <= v_start:
+                v_end = v_start + 0.22
             res.append({
                 "word": sw,
-                "start": float(vw["start"]),
-                "end": float(vw["end"])
+                "start": v_start,
+                "end": v_end
             })
         return res
 
@@ -163,10 +182,14 @@ def align_words_to_vosk(
             for i in range(first_s):
                 v_target = int(round(i * (first_v - 1) / max(1, first_s - 1))) if first_s > 1 else 0
                 vw = vosk_words[min(first_v - 1, max(0, v_target))]
-                aligned_words[i] = {"word": script_words[i], "start": float(vw["start"]), "end": float(vw["end"])}
+                aligned_words[i] = {
+                    "word": script_words[i], 
+                    "start": max(window_start, float(vw["start"])), 
+                    "end": max(window_start + 0.1, float(vw["end"]))
+                }
         else:
-            t_first = float(vosk_words[0]["start"])
-            t_start = max(0.0, t_first - 0.35 * first_s)
+            t_first = aligned_words[first_s]["start"]
+            t_start = max(window_start, t_first - 0.32 * first_s)
             span = max(0.1, t_first - t_start)
             step = span / first_s
             for i in range(first_s):
@@ -191,12 +214,16 @@ def align_words_to_vosk(
                 s_i = s_curr + step_i
                 v_target = v_curr + int(round(step_i * gap_v / (gap_s + 1)))
                 vw = vosk_words[min(v_next - 1, max(v_curr + 1, v_target))]
-                aligned_words[s_i] = {"word": script_words[s_i], "start": float(vw["start"]), "end": float(vw["end"])}
+                aligned_words[s_i] = {
+                    "word": script_words[s_i], 
+                    "start": max(window_start, float(vw["start"])), 
+                    "end": float(vw["end"])
+                }
         else:
             t_s = aligned_words[s_curr]["end"]
             t_e = aligned_words[s_next]["start"]
             if t_e <= t_s:
-                t_e = t_s + 0.3 * gap_s
+                t_e = t_s + 0.28 * gap_s
             span = t_e - t_s
             weights = [max(1, len(script_words[s_curr + step_i])) for step_i in range(1, gap_s + 1)]
             tot_w = sum(weights)
@@ -217,22 +244,29 @@ def align_words_to_vosk(
                 s_i = last_s + step_i
                 v_target = last_v + int(round(step_i * rem_v / rem_s))
                 vw = vosk_words[min(len(vosk_words) - 1, v_target)]
-                aligned_words[s_i] = {"word": script_words[s_i], "start": float(vw["start"]), "end": float(vw["end"])}
+                aligned_words[s_i] = {
+                    "word": script_words[s_i], 
+                    "start": float(vw["start"]), 
+                    "end": min(window_end, float(vw["end"])) if window_end > 0 else float(vw["end"])
+                }
         else:
             t_s = aligned_words[last_s]["end"]
-            t_e = max(t_s + 0.35 * rem_s, total_audio_duration if total_audio_duration > t_s else t_s + 1.5)
-            span = t_e - t_s
+            t_e = window_end if (window_end > t_s) else (t_s + 0.35 * rem_s)
+            span = max(0.1, t_e - t_s)
             step = span / rem_s
             for step_i in range(1, rem_s + 1):
                 s_i = last_s + step_i
                 aligned_words[s_i] = {"word": script_words[s_i], "start": t_s + (step_i - 1) * step, "end": t_s + step_i * step}
 
-    # Asegurar orden estrictamente no solapado
+    # Asegurar orden estrictamente no solapado y dentro de la ventana
     final_list: List[Dict[str, Any]] = []
     for i in range(len(aligned_words)):
         item = aligned_words[i]
         if item is None:
             continue
+        item["start"] = max(window_start, item["start"])
+        if window_end > 0:
+            item["end"] = min(window_end, item["end"])
         if final_list:
             prev = final_list[-1]
             if item["start"] < prev["start"]:
@@ -341,107 +375,156 @@ def detect_voice_activity_bounds(audio_path: str, start_sec: float, duration: fl
 
 def align_transcript_with_acoustic_analysis(
     srt_blocks: List[Dict[str, Any]],
-    audio_path: str,
-    max_words_per_chunk: int = 3
+    audio_path: str = None,
+    max_words_per_chunk: int = 3,
+    total_audio_duration: float = 0.0
 ) -> List[Dict[str, Any]]:
     """
-    Sincronización híbrida perfecta:
-    1. Las marcas [MM:SS] del usuario definen los cortes de imagen.
-    2. El texto del usuario proporciona las palabras exactas, puntuación y gramática.
-    3. El audio proporciona la detección acústica real (inicio de voz, pausas y fin).
-    4. Cada frase se subdivide en fragmentos cortos de 2-3 palabras ponderados por fonética silábica.
-    5. Se aplica una separación limpia (GAP de 45ms) entre subtítulos para que NUNCA se solapen visualmente.
+    Sincronización acústica de alta precisión combinando el guion del usuario con el análisis de voz:
+    1. Si el usuario proporcionó marcas de tiempo [MM:SS] o bloques SRT, cada frase queda firmemente
+       anclada a su ventana de tiempo [w_start, w_end]. Esto hace IMPOSIBLE que los subtítulos se adelanten,
+       se apiñen o terminen antes de tiempo.
+    2. Dentro de cada ventana, se extraen las marcas acústicas de Vosk para sincronizar cada palabra
+       con la voz real al milisegundo y respetar los silencios.
+    3. El último bloque de subtítulos se extiende automáticamente hasta el final real del audio,
+       garantizando que ninguna frase quede cortada antes de que acabe el video.
+    4. Se subdivide en ráfagas de 2-3 palabras (o el ritmo elegido) y se aplica un GAP de 45ms
+       anti-solapamiento visual limpio para evitar que un subtítulo aparezca sobre el anterior.
     """
-    if not os.path.exists(audio_path) or not srt_blocks:
-        return srt_blocks
+    if not srt_blocks:
+        return []
 
-    try:
-        vosk_words = extract_vosk_word_timestamps(audio_path)
-    except Exception:
-        vosk_words = []
+    audio_exists = bool(audio_path and os.path.exists(audio_path))
+    
+    # Obtener duración real del audio si no viene especificada
+    if total_audio_duration <= 0 and audio_exists:
+        try:
+            from core.renderer import get_audio_duration
+            total_audio_duration = get_audio_duration(audio_path)
+        except Exception:
+            total_audio_duration = float(srt_blocks[-1].get("end_time", 30.0))
+
+    if total_audio_duration <= 0:
+        total_audio_duration = float(srt_blocks[-1].get("end_time", 30.0))
+
+    # Asegurar que el último bloque del usuario cubra hasta el final real del audio
+    if srt_blocks and total_audio_duration > float(srt_blocks[-1].get("start_time", 0.0)):
+        srt_blocks[-1]["end_time"] = total_audio_duration
+        srt_blocks[-1]["duration"] = total_audio_duration - float(srt_blocks[-1]["start_time"])
+
+    # 1. Extraer palabras detectadas por Vosk en todo el audio
+    vosk_words = []
+    if audio_exists:
+        try:
+            vosk_words = extract_vosk_word_timestamps(audio_path)
+        except Exception:
+            vosk_words = []
+
+    has_timestamps = len(srt_blocks) >= 2 and any(float(b.get("start_time", 0.0)) > 0 for b in srt_blocks)
 
     aligned_chunks = []
-    ANTI_OVERLAP_GAP = 0.045  # 45 ms de silencio visual para transición nítida e instantánea
+    step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else 3
+    ANTI_OVERLAP_GAP = 0.045  # 45 ms de separación limpia anti-solapamiento visual
 
-    for b_idx, block in enumerate(srt_blocks):
-        b_start = float(block.get("start_time", 0.0))
-        b_end = float(block.get("end_time", b_start + 3.0))
-        b_dur = max(0.2, b_end - b_start)
-        b_text = block.get("display_text", block.get("raw_text", "")).strip()
-        words = b_text.split()
-        if not words:
-            continue
+    if has_timestamps:
+        # Alinear frase por frase anclada a su ventana de tiempo [w_start, w_end]
+        for b_idx, block in enumerate(srt_blocks):
+            w_start = float(block.get("start_time", 0.0))
+            w_end = float(block.get("end_time", w_start + 3.0))
+            if b_idx == len(srt_blocks) - 1 and total_audio_duration > w_start:
+                w_end = max(w_end, total_audio_duration)
 
-        # 1. Detectar inicio y fin real de la voz en este bloque mediante energía RMS
-        v_start, v_end = detect_voice_activity_bounds(audio_path, b_start, b_dur)
-        v_span = max(0.3, v_end - v_start)
+            b_text = block.get("display_text", block.get("raw_text", "")).strip()
+            script_words = b_text.split()
+            if not script_words:
+                continue
 
-        # 2. Dividir la frase en fragmentos dinámicos de 2 a 3 palabras
-        step = max(1, max_words_per_chunk) if max_words_per_chunk > 0 else len(words)
-        chunk_texts = [" ".join(words[i:i + step]) for i in range(0, len(words), step)]
-        
-        # 3. Ponderación fonética proporcional a la longitud hablada real
-        weights = [count_phonetic_weight(txt) for txt in chunk_texts]
-        tot_weight = sum(weights)
+            # Extraer palabras de Vosk en el vecindario exacto de este bloque
+            local_vosk = [
+                vw for vw in vosk_words 
+                if float(vw["start"]) >= (w_start - 0.6) and float(vw["end"]) <= (w_end + 0.6)
+            ]
 
-        # 4. Palabras reconocidas por Vosk en este intervalo para ajuste fino
-        block_vosk = [
-            w for w in vosk_words 
-            if (float(w["start"]) >= b_start - 0.35 and float(w["end"]) <= b_end + 0.35)
-        ]
+            aligned_block_words = align_words_to_vosk(
+                script_words=script_words,
+                vosk_words=local_vosk,
+                total_audio_duration=total_audio_duration,
+                window_start=w_start,
+                window_end=w_end
+            )
 
-        # 5. Distribuir temporalmente los fragmentos
-        block_chunks = []
-        curr_t = v_start
+            # Subdividir en ráfagas de 2-3 palabras
+            for i in range(0, len(aligned_block_words), step):
+                sub = aligned_block_words[i:i + step]
+                c_start = sub[0]["start"]
+                c_end = sub[-1]["end"]
+                c_text = " ".join([w["word"] for w in sub])
 
-        for i, (ctxt, w_val) in enumerate(zip(chunk_texts, weights)):
-            c_dur = v_span * (w_val / tot_weight)
-            c_start = curr_t
-            c_end = curr_t + c_dur
+                aligned_chunks.append({
+                    "index": f"{block.get('index', b_idx + 1)}_{i // step + 1}",
+                    "block_idx": b_idx,
+                    "start_time": c_start,
+                    "end_time": c_end,
+                    "duration": max(0.12, c_end - c_start),
+                    "display_text": c_text,
+                    "raw_text": c_text,
+                    "_already_chunked": True
+                })
 
-            # Si Vosk detectó la primera palabra de este fragmento, ajustar inicio a la voz real
-            if block_vosk:
-                first_norm = normalize_word(ctxt.split()[0])
-                for vw in block_vosk:
-                    if normalize_word(vw["word"]) == first_norm:
-                        if abs(float(vw["start"]) - c_start) < 0.6:
-                            c_start = max(b_start, float(vw["start"]))
-                            c_end = max(c_start + 0.2, c_end)
-                        break
+    else:
+        # Si no hay marcas de tiempo por bloque, alinear todo el guión a lo largo del audio
+        all_words_meta = []
+        for b_idx, block in enumerate(srt_blocks):
+            b_text = block.get("display_text", block.get("raw_text", "")).strip()
+            for w_i, w in enumerate(b_text.split()):
+                all_words_meta.append({
+                    "word": w,
+                    "block_idx": b_idx,
+                    "block_index_label": block.get("index", b_idx + 1)
+                })
 
-            block_chunks.append({
-                "index": f"{block.get('index', b_idx + 1)}_{i + 1}",
+        if not all_words_meta:
+            return []
+
+        script_words = [item["word"] for item in all_words_meta]
+        aligned_words = align_words_to_vosk(
+            script_words=script_words,
+            vosk_words=vosk_words,
+            total_audio_duration=total_audio_duration,
+            window_start=0.0,
+            window_end=total_audio_duration
+        )
+
+        for i in range(0, len(aligned_words), step):
+            sub = aligned_words[i:i + step]
+            c_start = sub[0]["start"]
+            c_end = sub[-1]["end"]
+            c_text = " ".join([w["word"] for w in sub])
+            meta_first = all_words_meta[i]
+
+            aligned_chunks.append({
+                "index": f"{meta_first['block_index_label']}_{i // step + 1}",
+                "block_idx": meta_first["block_idx"],
                 "start_time": c_start,
                 "end_time": c_end,
-                "duration": max(0.15, c_end - c_start),
-                "display_text": ctxt,
-                "raw_text": ctxt
+                "duration": max(0.12, c_end - c_start),
+                "display_text": c_text,
+                "raw_text": c_text,
+                "_already_chunked": True
             })
-            curr_t = c_end
 
-        # 6. CRÍTICO: Eliminar cualquier solapamiento visual entre fragmentos consecutivos
-        for i in range(len(block_chunks) - 1):
-            next_start = block_chunks[i + 1]["start_time"]
-            if block_chunks[i]["end_time"] >= next_start - ANTI_OVERLAP_GAP:
-                block_chunks[i]["end_time"] = max(block_chunks[i]["start_time"] + 0.12, next_start - ANTI_OVERLAP_GAP)
-            block_chunks[i]["duration"] = block_chunks[i]["end_time"] - block_chunks[i]["start_time"]
-
-        # Asegurar que el último fragmento de la imagen termine limpiamente antes del corte
-        if block_chunks:
-            block_chunks[-1]["end_time"] = min(b_end - ANTI_OVERLAP_GAP, block_chunks[-1]["end_time"])
-            block_chunks[-1]["duration"] = max(0.12, block_chunks[-1]["end_time"] - block_chunks[-1]["start_time"])
-
-        aligned_chunks.extend(block_chunks)
-
-    # 7. FILTRO GLOBAL: Garantizar separación limpia absoluta entre TODOS los subtítulos consecutivos del video
+    # FILTRO GLOBAL ANTI-SOLAPAMIENTO: Garantizar 45ms de silencio visual entre subtítulos
     # (Evita que un subtítulo aparezca mientras el anterior está desapareciendo)
     for i in range(len(aligned_chunks) - 1):
         c1 = aligned_chunks[i]
         c2 = aligned_chunks[i + 1]
         if c1["end_time"] >= c2["start_time"] - ANTI_OVERLAP_GAP:
             c1["end_time"] = max(c1["start_time"] + 0.12, c2["start_time"] - ANTI_OVERLAP_GAP)
-            c1["duration"] = max(0.10, c1["end_time"] - c1["start_time"])
+        c1["duration"] = max(0.10, c1["end_time"] - c1["start_time"])
 
+    # Asegurar que el último subtítulo no sobrepase el final del audio
+    if aligned_chunks and total_audio_duration > 0:
+        aligned_chunks[-1]["end_time"] = min(total_audio_duration - 0.04, aligned_chunks[-1]["end_time"])
     return aligned_chunks
 
 def extract_audio_samples(audio_path: str, start_sec: float = 0.0, duration: float = -1.0, sample_rate: int = 16000) -> Tuple[np.ndarray, int]:
